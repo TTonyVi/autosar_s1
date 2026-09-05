@@ -46,13 +46,16 @@ target_include_directories(bsw_services PUBLIC
 autosar_apply_warnings(bsw_services)
 
 add_library(bsw_com STATIC
-    bsw/communication/Bsw_Com_Placeholder.c
+    bsw/communication/CanIf/CanIf.c
 )
 target_link_libraries(bsw_com PUBLIC platform)
 target_include_directories(bsw_com PUBLIC
     bsw/communication/Com
     bsw/communication/PduR
     bsw/communication/CanIf
+    bsw/mcal/Can # CanIf.h depends on Can.h (Can_ControllerStateType, Can_HwHandleType);
+                 # header-only dependency, resolved at final link (same seam as bsw_mcal -> Det)
+    bsw/services/Det # CanIf reports to Det; header-only dependency, resolved at final link
 )
 autosar_apply_warnings(bsw_com)
 
@@ -65,6 +68,7 @@ add_library(bsw_mcal STATIC
     bsw/mcal/Adc/Adc.c
     bsw/mcal/Dio/Dio.c
     bsw/mcal/Display/Display.c
+    bsw/mcal/Can/Can.c
 )
 target_link_libraries(bsw_mcal PUBLIC platform)
 target_include_directories(bsw_mcal PUBLIC
@@ -76,7 +80,10 @@ target_include_directories(bsw_mcal PUBLIC
     bsw/mcal/Display
     bsw/mcal/Can
     bsw/mcal/VirtualHw
-    bsw/services/Det # Mcu/Port/Gpt report to Det; header-only dependency, resolved at final link
+    bsw/services/Det # Mcu/Port/Gpt/Can report to Det; header-only dependency, resolved at final link
+    bsw/communication/CanIf # Can.c calls CanIf_RxIndication/CanIf_TxConfirmation (section 7.1
+                             # rule 9, section 7.2); header-only dependency, resolved at final
+                             # link when an ECU executable links both bsw_mcal and bsw_com
 )
 autosar_apply_warnings(bsw_mcal)
 
@@ -260,3 +267,49 @@ target_include_directories(test_display PRIVATE
 target_link_libraries(test_display PRIVATE bsw_services platform)
 autosar_apply_warnings(test_display)
 add_test(NAME test_display COMMAND test_display)
+
+# ---------------------------------------------------------------------------
+# Phase 3 unit tests: Can, CanIf (section 16, Phase 3; section 14.1).
+#
+# test_can exercises the REAL Can.c (real PF_CAN/SOCK_RAW sockets on the
+# real "vcan0" interface -- this is the layer that owns the socket, same
+# rationale as test_virtual_hw) against a FAKE CanIf
+# (tests/fixtures/CanIf_Fake.c), so assertions can inspect exactly what
+# Can.c handed upward without depending on CanIf's own routing logic. It
+# never links bsw_mcal or bsw_com (would duplicate these same .c files via
+# the archive); the needed real sources are compiled directly into the
+# test executable, same seam as Phase 1/2. Requires vcan0 to exist and be
+# up (tools/setup_vcan.sh; see README.md).
+#
+# test_canif exercises the REAL CanIf.c against a FAKE Can
+# (tests/fixtures/Can_Fake.c), for full, deterministic control over
+# controller state and Can_Write's result -- exactly the section 16 Phase
+# 3 deliverable ("in-memory or mocked transport for unit tests").
+# ---------------------------------------------------------------------------
+add_executable(test_can
+    tests/unit/test_can.c
+    bsw/mcal/Can/Can.c
+    tests/fixtures/CanIf_Fake.c
+)
+target_include_directories(test_can PRIVATE
+    bsw/mcal/Can
+    bsw/communication/CanIf
+    tests/fixtures
+)
+target_link_libraries(test_can PRIVATE bsw_services platform)
+autosar_apply_warnings(test_can)
+add_test(NAME test_can COMMAND test_can)
+
+add_executable(test_canif
+    tests/unit/test_canif.c
+    bsw/communication/CanIf/CanIf.c
+    tests/fixtures/Can_Fake.c
+)
+target_include_directories(test_canif PRIVATE
+    bsw/communication/CanIf
+    bsw/mcal/Can
+    tests/fixtures
+)
+target_link_libraries(test_canif PRIVATE bsw_services platform)
+autosar_apply_warnings(test_canif)
+add_test(NAME test_canif COMMAND test_canif)

@@ -9,7 +9,7 @@ instruction (section 0.2, item 4).
 | 0 | Repository and documentation baseline | **Done** | See below. |
 | 1 | Base MCAL, services, time, and scheduler | **Done** | See below. |
 | 2 | Virtual hardware links and input/output MCAL | **Done** | See below. |
-| 3 | Can Driver and CanIf | Not started | |
+| 3 | Can Driver and CanIf | **Done** | See below. |
 | 4 | PduR and COM | Not started | |
 | 5 | IoHwAb, RTE, and SW-Cs | Not started | |
 | 6 | EcuM and complete ECU integration | Not started | |
@@ -226,10 +226,132 @@ All verified in the same Ubuntu 20.04 dev sandbox as Phases 0-1 (same
       (found the same brace-style violations as Phases 0-1 on new files —
       fixed with `clang-format -i`, re-verified clean).
 
+## Phase 3 — delivered
+
+- `bsw/mcal/Can/{Can.h,Can.c}`: nonblocking `PF_CAN`/`SOCK_RAW`/`CAN_RAW`
+  transport, one socket per configured controller (this project uses one
+  controller per ECU). **The third module allowed to touch a host socket
+  (`REQ-ARCH-009`)**, alongside `Gpt` and `VirtualHw` — verified by grep
+  (see below). Bounded drain per `Can_MainFunction_Read` call (mirrors
+  `VirtualHw`'s `REQ-VHW-002`), classic-CAN DLC ceiling of 8 enforced on
+  both directions, error/RTR frames dropped, and `CAN_CS_STARTED` gating
+  on transmit and on forwarding a received frame upward (a stopped
+  controller still drains its kernel socket buffer so it cannot silently
+  fill up, but never calls `CanIf_RxIndication`). A CAN interface that
+  fails to open is exposed via `Can_IsControllerReady` and stays
+  permanently `CAN_CS_UNINIT` — unlike a `VirtualHw` link
+  (`REQ-ECUM-005`), `REQ-ECUM-001` makes this a startup failure that
+  `EcuM` (Phase 6) is expected to check for and abort on. A successful
+  `Can_Write` calls `CanIf_TxConfirmation` directly (section 7.1 rule 9);
+  `Can_MainFunction_Read` calls `CanIf_RxIndication` directly (section
+  7.2's sequence diagram) — both are header-only dependencies from
+  `bsw_mcal` into `bsw_com`, resolved at final executable link (same seam
+  already used for `Mcu`/`Port`/`Gpt` → `Det`), so `Can.h` itself has no
+  `CanIf` dependency and unit tests substitute a fake `CanIf` instead.
+- `bsw/communication/CanIf/{CanIf.h,CanIf.c}`: static Tx/Rx PDU routing
+  tables (`CanIf_TxPduConfigType`/`CanIf_RxPduConfigType`), validated
+  all-or-nothing at `CanIf_Init` — index-consistency check per entry,
+  DLC bounds, and rejection of a duplicate physical CAN ID within one Rx
+  table (`REQ-CFG-003`). `CanIf_Transmit` rejects an unmapped/out-of-range
+  logical Tx PDU id, a length that doesn't match the configured DLC, or a
+  controller that isn't `CAN_CS_STARTED`, all before ever calling
+  `Can_Write`. `CanIf_RxIndication` rejects an unmapped CAN ID/controller
+  pair or a mapped one with the wrong DLC. No socket code anywhere in this
+  file (section 3.1: CanIf "may call" only the Can Driver). Phase-3 scope
+  note documented in the header: `CanIf_RxIndication`/`CanIf_TxConfirmation`
+  only validate, count, and cache the event for test inspection in this
+  phase, since `PduR`/`Com` (the next hop per sections 7.1/7.2) are Phase 4
+  deliverables that don't exist yet; Phase 4 adds the forwarding call
+  without changing this header's signatures.
+- Extended `Det_ModuleIds.h` with `CAN`, `CANIF`, and `Det.h` with
+  `DET_ERR_HW_INIT_FAILED` (distinct from `DET_ERR_INVALID_CONFIG`: a
+  well-formed config table can still fail to open real hardware).
+- `tests/fixtures/CanIf_Fake.{h,c}`: a test-only `CanIf` substitute
+  implementing only the two notification entry points `Can.c` actually
+  calls (`CanIf_RxIndication`, `CanIf_TxConfirmation`), backed by
+  last-call recording — used by `test_can` so the Can Driver is tested in
+  isolation from CanIf's own routing logic.
+- `tests/fixtures/Can_Fake.{h,c}`: a test-only `Can` substitute
+  implementing the full `Can.h` public API over in-memory per-controller
+  state, plus a `CanFake_*` control surface (force a controller mode or a
+  `Can_Write` result without going through real validation) — used by
+  `test_canif` so CanIf's routing/validation logic is tested
+  deterministically without a real SocketCAN interface.
+- `test_can` (6 test functions) — uses the REAL `Can.c` against **real**
+  `vcan0` (this is the layer that owns the socket, same rationale as
+  `test_virtual_hw`) with a FAKE `CanIf`. `test_canif` (9 test functions)
+  — uses the REAL `CanIf.c` against a FAKE `Can`. Both registered with
+  `ctest`, covering exactly the section 14.1 bullet points for these two
+  targets and the Phase 3 exit criteria's "wrong ID/DLC/controller-state"
+  cases.
+
+### Phase 3 exit criteria (spec section 16) — verification
+
+All verified in the same Ubuntu 20.04 dev sandbox as Phases 0-2 (same
+`cmake_minimum_required` temporary-lower/restore pattern):
+
+- [x] Build succeeds with **both** GCC 9.4.0 and Clang 10.0.0, zero
+      warnings, with the full mandatory warning set. Two real build errors
+      found and fixed on the first attempt: (1) `struct ifreq` was
+      undeclared (`_POSIX_C_SOURCE` alone disables glibc's BSD-ism gate;
+      fixed by also defining `_DEFAULT_SOURCE` in `Can.c` and
+      `test_can.c`), and (2) a `-Wconversion` narrowing of `PduLengthType`
+      (`uint16`) to `Can_PduType.length` (`uint8`) in `CanIf_Transmit`
+      (fixed with an explicit cast, safe because it is only reached after
+      confirming the length already equals the configured `uint8` DLC).
+- [x] `ctest` passes: 8/8 (adding `test_can`, `test_canif`), under both
+      compilers.
+- [x] **Loopback test on `vcan0` passes**: `test_can` writes a frame and an
+      independent peer raw socket (playing "the other ECU") observes it
+      on the bus with the correct CAN ID/DLC/payload — deliberately
+      structured as two parties rather than self-reception, since
+      `vcan0`'s default `CAN_RAW_RECV_OWN_MSGS=0` means a socket does not
+      see its own transmitted frames (exactly what lets the real
+      `SensorEcu`/`ClusterEcu` processes talk over `vcan0` with no real
+      bus hardware); a separate case has the peer inject a frame that
+      `Can_MainFunction_Read` drains and forwards.
+- [x] Wrong-DLC case tested at both layers: `Can_Write` rejects a length
+      greater than 8 before touching the socket; `CanIf_Transmit` and
+      `CanIf_RxIndication` each reject a length that doesn't match the
+      configured DLC.
+- [x] Wrong-ID case tested at both layers: `CanIf_Transmit` rejects an
+      out-of-range/unmapped logical Tx PDU id; `CanIf_RxIndication`
+      rejects a CAN ID with no matching configured Rx PDU.
+- [x] Wrong-controller-state case tested at both layers: `Can_Write` and
+      `CanIf_Transmit` both reject a transmit while the controller isn't
+      `CAN_CS_STARTED`; a real frame injected onto `vcan0` while stopped
+      is drained (counted) but never reaches `CanIf_RxIndication`, then
+      the very next frame after starting the controller does.
+- [x] `Can_IsControllerReady`/`Can_SetControllerMode` confirm
+      `REQ-ECUM-001`: a controller configured against a nonexistent
+      interface name never becomes ready and can never be started later.
+- [x] `grep` for `clock_gettime`/`sys/socket.h`/`sys/un.h`/`linux/can.h`/
+      `linux/can/raw.h`/`AF_UNIX`/`AF_CAN`/`PF_CAN` across `asw/
+      bsw/communication/ bsw/ecu_abstraction/ bsw/os/ bsw/services/ rte/
+      ecu/ platform/ tools/` (i.e. everywhere except `bsw/mcal/` and the
+      explicitly-exempt `tests/`) returns nothing (`REQ-ARCH-009`).
+- [x] `grep` for a `"/tmp/` path literal in the same scope returns nothing.
+- [x] `grep` for `malloc`/`calloc`/`realloc`/`free` across
+      `bsw/ rte/ asw/ ecu/ platform/ tests/` still returns nothing.
+- [x] `clang-format --dry-run --Werror` passes on every `.c`/`.h` file
+      (found the same brace/line-wrap style violations as Phases 0-2 on
+      new files — fixed with `clang-format -i`, re-verified clean).
+
+#### Deviation note: `test_can` requires `vcan0`
+
+Unlike every prior test target, `test_can` opens a real socket on
+`vcan0` and fails to build meaningfully as a test if that interface is
+absent — documented in `README.md`'s "Build and test" section as a
+prerequisite carried over from "Virtual CAN interface" (`tools/setup_vcan.sh`).
+This is intentional per section 16's own exit criterion ("loopback test on
+vcan passes"): unlike `VirtualHw` links, there is no fake substitute for
+the layer that owns the socket itself, matching `test_virtual_hw`'s same
+real-socket rationale in Phase 2.
+
 ## Not yet implemented
 
-`Can`, `CanIf` (Phase 3); `PduR`, `Com` (Phase 4); `IoHwAb`, RTE APIs, both
-SW-Cs (Phase 5); `EcuM` and the real ECU main-loop wiring, including the
-`Os_MainFunction` outer loop with `clock_nanosleep` (Phase 6); the Tkinter
-HMI and scenario player (Phase 7); sanitizers, remaining static checks, and
-full traceability (Phase 8).
+`PduR`, `Com` (Phase 4); `IoHwAb`, RTE APIs, both SW-Cs (Phase 5); `EcuM`
+and the real ECU main-loop wiring, including the `Os_MainFunction` outer
+loop with `clock_nanosleep` (Phase 6); the Tkinter HMI and scenario player
+(Phase 7); sanitizers, remaining static checks, and full traceability
+(Phase 8).

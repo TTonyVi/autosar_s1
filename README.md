@@ -70,6 +70,10 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
+`test_can` (Phase 3) opens a real socket on `vcan0` and requires the
+"Virtual CAN interface" step above to have run first; every other test
+target has no such prerequisite.
+
 ## Run
 
 Three processes, any order — the system is designed to tolerate any of

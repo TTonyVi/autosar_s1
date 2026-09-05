@@ -28,6 +28,13 @@ typedef uint8 Det_ErrorIdType;
 #define DET_ERR_INVALID_PARAM ((Det_ErrorIdType)3U)
 #define DET_ERR_INVALID_CONFIG ((Det_ErrorIdType)4U)
 #define DET_ERR_SCHEDULER_OVERRUN ((Det_ErrorIdType)5U)
+/* Distinct from DET_ERR_INVALID_CONFIG: a configuration table can be
+ * perfectly well-formed and the underlying hardware still fail to open
+ * (e.g. Can_Init's SocketCAN interface does not exist). Kept separate so
+ * REQ-ECUM-001 (CAN interface open failure SHALL be a startup failure) is
+ * traceable to a specific error id instead of overloading
+ * DET_ERR_INVALID_CONFIG's meaning. */
+#define DET_ERR_HW_INIT_FAILED ((Det_ErrorIdType)6U)
 
 /** Ring buffer capacity per spec section 10.1 ("latest 64 records"). */
 #define DET_MAX_RECORDS ((uint32)64U)
