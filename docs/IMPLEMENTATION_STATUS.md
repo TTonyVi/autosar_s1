@@ -1,0 +1,235 @@
+# Implementation status
+
+Tracks progress against the phase plan in `AUTOSAR_CLASSIC_PROJECT_SPEC_v1.1.md`,
+section 16. Updated at the end of every phase, per the spec's own
+instruction (section 0.2, item 4).
+
+| Phase | Title | Status | Notes |
+|---:|---|---|---|
+| 0 | Repository and documentation baseline | **Done** | See below. |
+| 1 | Base MCAL, services, time, and scheduler | **Done** | See below. |
+| 2 | Virtual hardware links and input/output MCAL | **Done** | See below. |
+| 3 | Can Driver and CanIf | Not started | |
+| 4 | PduR and COM | Not started | |
+| 5 | IoHwAb, RTE, and SW-Cs | Not started | |
+| 6 | EcuM and complete ECU integration | Not started | |
+| 7 | Tkinter HMI and scenario player | Not started | |
+| 8 | Robustness and handoff | Not started | |
+
+## Phase 0 — delivered
+
+- Full directory skeleton per spec section 12 (`platform/`, `bsw/{services,
+  communication,ecu_abstraction,mcal,os}/`, `asw/`, `rte/`, `ecu/`,
+  `tests/`, `tools/hmi/`, `scenarios/`).
+- Root `CMakeLists.txt` (CMake ≥3.20, C11) wiring up every target named in
+  section 12.2 (`platform`, `bsw_services`, `bsw_com`, `bsw_mcal`,
+  `bsw_ecuab`, `rte_sensor`, `rte_cluster`, `asw_sensor`, `asw_cluster`,
+  `sensor_ecu`, `cluster_ecu`), each currently backed by a single
+  placeholder translation unit, built with
+  `-Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow` via
+  `cmake/CompilerWarnings.cmake`.
+- `platform/include/{Platform_Types.h,Std_Types.h,ComStack_Types.h}` — the
+  fixed-width types and common communication-stack structs from spec
+  section 7.3.
+- `ecu/SensorEcu/main.c` and `ecu/ClusterEcu/main.c`: placeholder entry
+  points that print an identity/version string and exit 0.
+- `tools/setup_vcan.sh`: idempotent `vcan0` bring-up per section 15.1.
+- `tests/unit/test_smoke_phase0.c` + a `ctest` registration, proving the
+  build/test harness works end to end (real per-module unit tests start in
+  Phase 1, per the coverage table in section 14.1).
+- `README.md`, `docs/ARCHITECTURE.md` (layer diagram + EcuM init-order
+  rationale required by section 9.2), `docs/REQUIREMENTS_TRACEABILITY.md`
+  and `docs/TEST_PLAN.md` (skeletons), `docs/arxml/README.md` (full content
+  per section 11.4, since it doesn't depend on later phases).
+- `.clang-format` checked in per section 13.1.
+
+### Phase 0 exit criteria (spec section 16) — verification
+
+All verified in this dev sandbox (Ubuntu 20.04 x86_64 — **not** the
+22.04/24.04 target claimed by the spec; see deviation note below):
+
+- [x] `cmake -S . -B build && cmake --build build --parallel` succeeds with
+      **both** GCC 9.4.0 and Clang 10.0.0, zero warnings, with
+      `-Wall -Wextra -Werror -Wpedantic -Wconversion -Wshadow`.
+- [x] `ctest` passes (1/1, `test_smoke_phase0`).
+- [x] Both ECU executables start, print a placeholder version, and exit 0.
+- [x] `tools/setup_vcan.sh` run twice back-to-back: first run creates and
+      brings up `vcan0`, second run detects it already exists/already up
+      and exits 0 both times (idempotency confirmed) —
+      `ip -details link show vcan0` output printed correctly.
+- [x] `clang-format --dry-run --Werror` passes on every `.c`/`.h` file
+      (found real violations on first run — brace placement didn't match
+      the checked-in `.clang-format`'s `BreakBeforeBraces: Attach` — fixed
+      with `clang-format -i` across the tree, then re-verified clean).
+
+#### Deviation note: verification environment vs. target platform
+
+This sandbox is Ubuntu 20.04, whose `apt` repository only ships CMake
+3.16.3, below the spec's required 3.20 (section 13.1; Ubuntu 22.04/24.04
+ship 3.22/3.28, which satisfy it natively). `cmake_minimum_required` was
+temporarily lowered to 3.16 to run the checks above, then restored to
+`3.20` in the committed `CMakeLists.txt` before this file was written —
+nothing else in the CMake code depends on the lowered version, so this is
+purely an artifact of the sandbox's package availability, not a spec
+change. Re-verify on an actual Ubuntu 22.04/24.04 machine before treating
+Phase 0 as fully closed on the real target.
+
+## Phase 1 — delivered
+
+- `bsw/mcal/Gpt/{Gpt.h,Gpt.c}`: the single free-running millisecond time
+  base (`GPT_CHANNEL_TIME_BASE`). **The only file in the whole project that
+  calls `clock_gettime`** (section 8.1, `REQ-ARCH-009`'s static check) —
+  verified by grep (see below).
+- `bsw/mcal/Mcu/{Mcu.h,Mcu.c}` and `bsw/mcal/Port/{Port.h,Port.c}`:
+  near-no-op on Ubuntu, validate their config pointer and report to `Det`
+  on null, matching a real target's initialization contract shape
+  (`REQ-CFG-001`).
+- `bsw/services/Det/{Det.h,Det.c,Det_ModuleIds.h}`: bounded, saturating
+  per-module error counters plus a 64-record ring buffer, no dynamic
+  allocation (verified — see below). `Det_ModuleIds.h` is the shared
+  project-local module ID registry other modules extend as they're added.
+- `bsw/services/Dem/{Dem.h,Dem.c}`: current status, occurrence counter, and
+  last-failed/last-passed monotonic timestamps (from `Gpt`) for the 7
+  diagnostic events in spec section 10.2. Documented simplification:
+  `occurrenceCount` increments only on a passed→failed transition, not on
+  every repeated FAILED report while already failed.
+- `bsw/os/Os/{Os.h,Os.c}`: cooperative cyclic-executive scheduler. Absolute
+  next-release timestamps (no drift), priority-ordered dispatch when
+  multiple tasks are due together (larger numeric priority runs first,
+  ties broken by config-array position), missed-period counting with a
+  `Det` overrun report, and per-task stats (invocation count, max start
+  latency, max exec time, missed count). Deliberately does **not** sleep or
+  loop internally — `Os_MainFunction` is one scheduling pass; the real-time
+  outer loop is wired into `ecu/*/main.c` in Phase 6. This keeps the
+  scheduler pure logic, fully testable with a fake clock.
+- `tests/fixtures/Gpt_Fake.{h,c}`: a test-only Gpt substitute (same public
+  API, manually-advanced counter instead of the host clock), compiled
+  directly into test executables instead of linking `bsw_mcal`, per the
+  Phase 1 deliverable "unit tests ... with a fake Gpt" (section 16).
+- `test_scheduler` (3 test functions) and `test_det_dem` (4 test
+  functions), registered with `ctest`, covering exactly the section 14.1
+  bullet points for these two targets.
+- Removed the Phase 0 placeholder sources `bsw/mcal/Bsw_Mcal_Placeholder.c`
+  and `bsw/services/Bsw_Services_Placeholder.c`, now superseded by real
+  content.
+
+### Phase 1 exit criteria (spec section 16) — verification
+
+All verified in the same Ubuntu 20.04 dev sandbox as Phase 0 (see that
+phase's deviation note — `cmake_minimum_required` was again temporarily
+lowered to 3.16 to run these checks, then restored to `3.20`):
+
+- [x] Build succeeds with **both** GCC 9.4.0 and Clang 10.0.0, zero
+      warnings, with the full mandatory warning set.
+- [x] `ctest` passes: 3/3 (`test_smoke_phase0`, `test_scheduler`,
+      `test_det_dem`), under both compilers.
+- [x] `test_scheduler`'s assertions pass using only the fake `Gpt` —
+      **deterministic with simulated time**, no wall-clock dependency: due
+      ordering (`Task_Io_5ms` before `Task_App_10ms` when both release
+      together), missed-period counting (4 missed periods when polled only
+      once after 500ms of simulated inactivity), and monotonic deadline
+      advancement (next release always exactly one period later, never
+      drifting).
+- [x] `grep -rl clock_gettime --include=*.c --include=*.h .` returns
+      **only** `bsw/mcal/Gpt/Gpt.c` — no other module, including `Os` and
+      `Dem` (both need timing), reads the host clock directly.
+- [x] `grep -rn 'malloc\|calloc\|realloc\|free(' ...` across
+      `bsw/ rte/ asw/ ecu/ platform/ tests/` returns nothing — no dynamic
+      allocation anywhere, including the new `Det`/`Dem`/`Os` state (all
+      fixed-size static arrays).
+- [x] `clang-format --dry-run --Werror` passes on every `.c`/`.h` file
+      (found real violations on first run, same brace-style mismatch as
+      Phase 0 — fixed with `clang-format -i`, re-verified clean).
+
+## Phase 2 — delivered
+
+- `bsw/mcal/VirtualHw/{VirtualHw.h,VirtualHw.c}`: the shared non-blocking
+  `AF_UNIX`/`SOCK_DGRAM` datagram transport. **The second (and last, along
+  with the future `Can`) module allowed to touch a host socket
+  (`REQ-ARCH-009`)** — verified by grep (see below). Bounded drain
+  (`REQ-VHW-002`), malformed/oversized rejection without touching the
+  cached payload (`REQ-VHW-003`), SEQ-based duplicate/reorder rejection
+  (`REQ-VHW-004`), non-fatal/non-blocking send with no listener
+  (`REQ-VHW-005`), and deterministic stale-socket-file cleanup at init
+  (`REQ-ECUM-006`). RX bind failures and TX-with-no-listener are both
+  reported to `Det` but never fatal (`REQ-ECUM-005`).
+- `bsw/mcal/VirtualHw/VirtualHw_Parse.c`: the generic "KEY=value" ASCII
+  parser (section 15.5.2's wire format), deliberately split into its own
+  pure, stateless, socket-free translation unit so tests can link this real
+  implementation alongside a fake `VirtualHw` instead of duplicating it.
+- `bsw/mcal/Adc/{Adc.h,Adc.c}` and `bsw/mcal/Dio/{Dio.h,Dio.c}`: raw
+  pass-through readers over `VirtualHw` — no scaling, clamping, or
+  interpretation (`REQ-MCAL-001`), even for implausible counts (plausibility
+  is `IoHwAb`'s job, Phase 5). Both delegate "do we have a value" and "how
+  old is it" entirely to `VirtualHw`'s own cache rather than keeping a
+  second, independently-timestamped copy — avoiding a class of bug where a
+  module's own age tracking could silently reset every time it happens to
+  re-poll an unchanged, already-stale value. Extended beyond section 7.4's
+  literal minimum API with `Adc_GetGroupAge`/`Dio_GetChannelAge` (documented
+  next to each), since `REQ-MCAL-001` requires reporting age but the
+  literal signatures given don't carry an age output parameter.
+- `bsw/mcal/Display/{Display.h,Display.c}`: transmit-only byte-frame
+  transport over `VirtualHw`. Enforces `minWritePeriodMs` (throttles,
+  doesn't send, counted separately from failures), counts real send
+  failures separately (feeds `DEM_EVENT_DISPLAY_LINK_LOST` in a later
+  phase), and is never fatal when nobody is listening (`UC-11`).
+- `tests/fixtures/VirtualHw_Fake.{h,c}`: a test-only `VirtualHw` substitute
+  (same public API, in-memory state instead of real sockets), used by
+  `test_adc_dio`/`test_display` for deterministic control over "the latest
+  payload" and send outcomes — the Phase 2 deliverable "unit tests using a
+  fake link" (section 16), mirroring Phase 1's `Gpt_Fake` seam.
+- `test_virtual_hw` (4 test functions, using the REAL sockets — this is the
+  layer that owns them), `test_adc_dio` (4 test functions), and
+  `test_display` (4 test functions), registered with `ctest`, covering
+  exactly the section 14.1 bullet points for these three targets.
+- `tools/hmi/hw_link.py`: standard-library-only manual stimulation tool
+  (section 15.6.2) for sending a single or repeating datagram onto a
+  virtual hardware link, ahead of the full Tkinter HMI (Phase 7).
+- Extended `Det_ModuleIds.h` with `VIRTUALHW`, `ADC`, `DIO`, `DISPLAY`.
+
+### Phase 2 exit criteria (spec section 16) — verification
+
+All verified in the same Ubuntu 20.04 dev sandbox as Phases 0-1 (same
+`cmake_minimum_required` temporary-lower/restore pattern):
+
+- [x] Build succeeds with **both** GCC 9.4.0 and Clang 10.0.0, zero
+      warnings, with the full mandatory warning set (one real
+      `-Wconversion` violation found and fixed on the first attempt — an
+      unsigned subtraction narrowed to `uint16` without a cast, in both
+      the real and fake `VirtualHw_GetLatestPayload`).
+- [x] `ctest` passes: 6/6 (adding `test_virtual_hw`, `test_adc_dio`,
+      `test_display`), under both compilers.
+- [x] `test_virtual_hw` exercises **real** `AF_UNIX` sockets end to end: a
+      raw peer socket created in the test sends datagrams that the real
+      driver receives, bounding drain to 8 per activation, keeping the
+      latest, rejecting malformed/oversized/duplicate datagrams without
+      disturbing the cache, and confirming a send to a path nobody is
+      bound to returns promptly with `E_NOT_OK` rather than blocking.
+- [x] `test_adc_dio` confirms raw pass-through (including an
+      out-of-range count, unclamped), age reporting driven purely by the
+      fake `Gpt` (no new datagram needed for age to grow), an unconfigured
+      group/channel being rejected with a `Det` report, and the configured
+      default `Dio` level before any datagram ever arrives.
+- [x] `test_display` confirms a successful write reaches `VirtualHw_Send`
+      exactly once, a send failure is counted separately from throttling,
+      a write inside `minWritePeriodMs` is throttled and never reaches
+      `VirtualHw_Send`, and an oversized frame is rejected before ever
+      reaching the transport.
+- [x] `grep` for `clock_gettime`/`sys/socket.h`/`sys/un.h`/`AF_UNIX`/
+      `linux/can.h` across `asw/ rte/ ecu/ platform/ tools/` (i.e.
+      everywhere except `bsw/mcal/` and the explicitly-exempt `tests/`)
+      returns nothing (`REQ-ARCH-009`).
+- [x] `grep` for a `"/tmp/` path literal in the same scope returns nothing.
+- [x] `grep` for `malloc`/`calloc`/`realloc`/`free` across
+      `bsw/ rte/ asw/ ecu/ platform/ tests/` still returns nothing.
+- [x] `clang-format --dry-run --Werror` passes on every `.c`/`.h` file
+      (found the same brace-style violations as Phases 0-1 on new files —
+      fixed with `clang-format -i`, re-verified clean).
+
+## Not yet implemented
+
+`Can`, `CanIf` (Phase 3); `PduR`, `Com` (Phase 4); `IoHwAb`, RTE APIs, both
+SW-Cs (Phase 5); `EcuM` and the real ECU main-loop wiring, including the
+`Os_MainFunction` outer loop with `clock_nanosleep` (Phase 6); the Tkinter
+HMI and scenario player (Phase 7); sanitizers, remaining static checks, and
+full traceability (Phase 8).

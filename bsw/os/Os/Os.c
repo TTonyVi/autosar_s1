@@ -1,0 +1,148 @@
+#include "Os.h"
+
+#include <stddef.h>
+#include <string.h>
+
+#include "Det.h"
+#include "Det_ModuleIds.h"
+
+#define OS_API_ID_INIT ((Det_ApiIdType)1U)
+#define OS_API_ID_MAIN_FUNCTION ((Det_ApiIdType)2U)
+#define OS_API_ID_GET_TASK_STATS ((Det_ApiIdType)3U)
+
+typedef struct {
+    uint32 nextReleaseMs;
+    uint32 invocationCount;
+    uint32 maxStartLatencyMs;
+    uint32 maxExecTimeMs;
+    uint32 missedCount;
+} Os_TaskRuntimeType;
+
+static const Os_ConfigType *g_config;
+static Os_TaskRuntimeType g_runtime[OS_MAX_TASKS];
+static boolean g_initialized;
+
+Std_ReturnType Os_Init(const Os_ConfigType *config) {
+    if (config == NULL) {
+        (void)Det_ReportError(DET_MODULE_ID_OS, 0U, OS_API_ID_INIT, DET_ERR_NULL_POINTER);
+        return E_NOT_OK;
+    }
+    if ((config->tasks == NULL) || (config->numTasks == 0U) || (config->numTasks > OS_MAX_TASKS)) {
+        (void)Det_ReportError(DET_MODULE_ID_OS, 0U, OS_API_ID_INIT, DET_ERR_INVALID_CONFIG);
+        return E_NOT_OK;
+    }
+    for (uint8 i = 0U; i < config->numTasks; i++) {
+        if ((config->tasks[i].callback == NULL) || (config->tasks[i].periodMs == 0U)) {
+            (void)Det_ReportError(DET_MODULE_ID_OS, i, OS_API_ID_INIT, DET_ERR_INVALID_CONFIG);
+            return E_NOT_OK;
+        }
+    }
+
+    g_config = config;
+    (void)memset(g_runtime, 0, sizeof(g_runtime));
+
+    Gpt_ValueType now = Gpt_GetTimeElapsed(GPT_CHANNEL_TIME_BASE);
+    for (uint8 i = 0U; i < config->numTasks; i++) {
+        /* First release happens one period after Os_Init, not immediately
+         * at init time — a deterministic, documented convention. */
+        g_runtime[i].nextReleaseMs = now + config->tasks[i].periodMs;
+    }
+
+    g_initialized = TRUE;
+    return E_OK;
+}
+
+void Os_DeInit(void) {
+    g_initialized = FALSE;
+    g_config = NULL;
+}
+
+void Os_MainFunction(void) {
+    if (!g_initialized) {
+        (void)Det_ReportError(DET_MODULE_ID_OS, 0U, OS_API_ID_MAIN_FUNCTION, DET_ERR_UNINIT);
+        return;
+    }
+
+    Gpt_ValueType now = Gpt_GetTimeElapsed(GPT_CHANNEL_TIME_BASE);
+
+    boolean due[OS_MAX_TASKS] = {FALSE};
+    uint32 originalDue[OS_MAX_TASKS] = {0U};
+    uint8 dueCount = 0U;
+
+    /* Pass 1: advance each task's release schedule past `now`, using
+     * absolute next-release timestamps (never "now + period") so a late
+     * check never accumulates drift (REQ: "Use absolute next-release
+     * timestamps to avoid cumulative drift"). If more than one release was
+     * due, run once and record the rest as missed (REQ-OS-002). */
+    for (uint8 i = 0U; i < g_config->numTasks; i++) {
+        Os_TaskRuntimeType *rt = &g_runtime[i];
+        uint32 firstDue = rt->nextReleaseMs;
+        uint32 missedThisCycle = 0U;
+
+        while (rt->nextReleaseMs <= now) {
+            missedThisCycle++;
+            rt->nextReleaseMs += g_config->tasks[i].periodMs;
+        }
+
+        if (missedThisCycle > 0U) {
+            due[i] = TRUE;
+            originalDue[i] = firstDue;
+            dueCount++;
+            if (missedThisCycle > 1U) {
+                rt->missedCount += (missedThisCycle - 1U);
+                (void)Det_ReportError(DET_MODULE_ID_OS, i, OS_API_ID_MAIN_FUNCTION,
+                                      DET_ERR_SCHEDULER_OVERRUN);
+            }
+        }
+    }
+
+    /* Pass 2: execute due tasks in priority order (larger value first),
+     * ties broken by array position — earlier wins (see Os.h). */
+    for (uint8 round = 0U; round < dueCount; round++) {
+        sint16 bestIdx = -1;
+        for (uint8 i = 0U; i < g_config->numTasks; i++) {
+            if (due[i]) {
+                if ((bestIdx < 0) ||
+                    (g_config->tasks[i].priority > g_config->tasks[(uint8)bestIdx].priority)) {
+                    bestIdx = (sint16)i;
+                }
+            }
+        }
+
+        uint8 idx = (uint8)bestIdx;
+        Os_TaskRuntimeType *rt = &g_runtime[idx];
+
+        uint32 latency = now - originalDue[idx];
+        if (latency > rt->maxStartLatencyMs) {
+            rt->maxStartLatencyMs = latency;
+        }
+
+        Gpt_ValueType execStart = Gpt_GetTimeElapsed(GPT_CHANNEL_TIME_BASE);
+        g_config->tasks[idx].callback();
+        Gpt_ValueType execEnd = Gpt_GetTimeElapsed(GPT_CHANNEL_TIME_BASE);
+        uint32 execTime = execEnd - execStart;
+        if (execTime > rt->maxExecTimeMs) {
+            rt->maxExecTimeMs = execTime;
+        }
+
+        rt->invocationCount++;
+        due[idx] = FALSE;
+    }
+}
+
+Std_ReturnType Os_GetTaskStats(uint8 taskIndex, Os_TaskStatsType *out) {
+    if ((out == NULL) || (!g_initialized) || (g_config == NULL) ||
+        (taskIndex >= g_config->numTasks)) {
+        (void)Det_ReportError(DET_MODULE_ID_OS, taskIndex, OS_API_ID_GET_TASK_STATS,
+                              DET_ERR_INVALID_PARAM);
+        return E_NOT_OK;
+    }
+
+    const Os_TaskRuntimeType *rt = &g_runtime[taskIndex];
+    out->invocationCount = rt->invocationCount;
+    out->maxStartLatencyMs = rt->maxStartLatencyMs;
+    out->maxExecTimeMs = rt->maxExecTimeMs;
+    out->missedCount = rt->missedCount;
+    out->nextReleaseMs = rt->nextReleaseMs;
+    return E_OK;
+}

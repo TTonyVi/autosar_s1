@@ -1,0 +1,17 @@
+# Build outputs (this project is built out-of-tree; see docs/TEST_PLAN.md)
+build/
+build-*/
+Testing/
+CMakeFiles/
+CMakeCache.txt
+
+# Virtual hardware link sockets (created at runtime under /tmp, but a stray
+# local one should never be committed if ever created here)
+*.sock
+
+# Python bytecode cache from tools/hmi/hw_link.py
+__pycache__/
+*.pyc
+
+# Claude Code local session state — not project content
+.claude/
