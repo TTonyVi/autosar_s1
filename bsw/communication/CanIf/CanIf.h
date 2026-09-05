@@ -9,13 +9,13 @@
  * table) -- it never touches a socket itself (REQ-ARCH-009 confines
  * sockets to bsw/mcal/).
  *
- * Phase-3 scope note: section 7.2's receive path continues
- * `PduR_CanIfRxIndication` and section 7.1's transmit confirmation chain
- * continues to `PduR_CanIfTxConfirmation`/`Com_TxConfirmation`, but PduR
- * and COM are Phase 4 deliverables and do not exist yet. `CanIf_RxIndication`
- * and `CanIf_TxConfirmation` therefore only validate, count, and cache the
- * event for test inspection in this phase; Phase 4 adds the forwarding
- * call once PduR exists, without changing this header's signatures.
+ * Since Phase 4, `CanIf_RxIndication` forwards an accepted frame to
+ * `PduR_CanIfRxIndication` (section 7.2) and a successful `CanIf_Transmit`
+ * chain's completion (`CanIf_TxConfirmation`) forwards to
+ * `PduR_CanIfTxConfirmation` (section 7.1 rule 9) -- both header-only
+ * dependencies resolved at final executable link, same seam as `Can.c`'s
+ * own dependency on this header. Unit tests substitute a fake `PduR`
+ * instead (tests/fixtures/PduR_Fake.c).
  */
 #ifndef CANIF_H
 #define CANIF_H

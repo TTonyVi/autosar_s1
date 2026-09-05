@@ -46,6 +46,9 @@ target_include_directories(bsw_services PUBLIC
 autosar_apply_warnings(bsw_services)
 
 add_library(bsw_com STATIC
+    bsw/communication/Com/Com.c
+    bsw/communication/Com/ComProtection.c
+    bsw/communication/PduR/PduR.c
     bsw/communication/CanIf/CanIf.c
 )
 target_link_libraries(bsw_com PUBLIC platform)
@@ -55,7 +58,9 @@ target_include_directories(bsw_com PUBLIC
     bsw/communication/CanIf
     bsw/mcal/Can # CanIf.h depends on Can.h (Can_ControllerStateType, Can_HwHandleType);
                  # header-only dependency, resolved at final link (same seam as bsw_mcal -> Det)
-    bsw/services/Det # CanIf reports to Det; header-only dependency, resolved at final link
+    bsw/mcal/Gpt # Com.h derives all timing from Gpt (section 8.1); header-only dependency,
+                 # resolved at final link
+    bsw/services/Det # CanIf/PduR/Com report to Det; header-only dependency, resolved at final link
 )
 autosar_apply_warnings(bsw_com)
 
@@ -282,9 +287,11 @@ add_test(NAME test_display COMMAND test_display)
 # up (tools/setup_vcan.sh; see README.md).
 #
 # test_canif exercises the REAL CanIf.c against a FAKE Can
-# (tests/fixtures/Can_Fake.c), for full, deterministic control over
-# controller state and Can_Write's result -- exactly the section 16 Phase
-# 3 deliverable ("in-memory or mocked transport for unit tests").
+# (tests/fixtures/Can_Fake.c) and a FAKE PduR (tests/fixtures/PduR_Fake.c,
+# added in Phase 4 once CanIf.c started forwarding to PduR), for full,
+# deterministic control over controller state and Can_Write's result --
+# exactly the section 16 Phase 3 deliverable ("in-memory or mocked
+# transport for unit tests").
 # ---------------------------------------------------------------------------
 add_executable(test_can
     tests/unit/test_can.c
@@ -304,12 +311,79 @@ add_executable(test_canif
     tests/unit/test_canif.c
     bsw/communication/CanIf/CanIf.c
     tests/fixtures/Can_Fake.c
+    tests/fixtures/PduR_Fake.c
 )
 target_include_directories(test_canif PRIVATE
     bsw/communication/CanIf
+    bsw/communication/PduR
     bsw/mcal/Can
     tests/fixtures
 )
 target_link_libraries(test_canif PRIVATE bsw_services platform)
 autosar_apply_warnings(test_canif)
 add_test(NAME test_canif COMMAND test_canif)
+
+# ---------------------------------------------------------------------------
+# Phase 4 unit tests: ComProtection, Com, PduR (section 16, Phase 4;
+# section 14.1).
+#
+# test_com_protection exercises the REAL, pure, stateless ComProtection.c
+# directly -- no Det/Gpt/Com dependency at all, so it needs no fixtures
+# and does not link bsw_services.
+#
+# test_com_pack exercises the REAL Com.c and ComProtection.c against a
+# FAKE PduR (tests/fixtures/PduR_Fake.c, to capture exactly what bytes
+# were requested to send) and a FAKE Gpt (tests/fixtures/Gpt_Fake.c, for
+# deterministic cyclic-Tx timing and Rx deadline supervision) -- exactly
+# the Phase 4 exit criteria ("raw CAN injection reaches a mock RTE
+# callback; COM Tx produces exact expected bytes").
+#
+# test_pdur exercises the REAL PduR.c against a FAKE CanIf (its
+# CanIf_Transmit role from tests/fixtures/CanIf_Fake.c) and a FAKE Com
+# (tests/fixtures/Com_Fake.c), so PduR's own id-only routing logic is
+# tested deterministically without a real CAN transport or signal
+# configuration.
+# ---------------------------------------------------------------------------
+add_executable(test_com_protection
+    tests/unit/test_com_protection.c
+    bsw/communication/Com/ComProtection.c
+)
+target_include_directories(test_com_protection PRIVATE bsw/communication/Com)
+target_link_libraries(test_com_protection PRIVATE platform)
+autosar_apply_warnings(test_com_protection)
+add_test(NAME test_com_protection COMMAND test_com_protection)
+
+add_executable(test_com_pack
+    tests/unit/test_com_pack.c
+    bsw/communication/Com/Com.c
+    bsw/communication/Com/ComProtection.c
+    tests/fixtures/PduR_Fake.c
+    tests/fixtures/Gpt_Fake.c
+)
+target_include_directories(test_com_pack PRIVATE
+    bsw/communication/Com
+    bsw/communication/PduR
+    bsw/mcal/Gpt
+    tests/fixtures
+)
+target_link_libraries(test_com_pack PRIVATE bsw_services platform)
+autosar_apply_warnings(test_com_pack)
+add_test(NAME test_com_pack COMMAND test_com_pack)
+
+add_executable(test_pdur
+    tests/unit/test_pdur.c
+    bsw/communication/PduR/PduR.c
+    tests/fixtures/CanIf_Fake.c
+    tests/fixtures/Com_Fake.c
+)
+target_include_directories(test_pdur PRIVATE
+    bsw/communication/PduR
+    bsw/communication/CanIf
+    bsw/communication/Com
+    bsw/mcal/Can
+    bsw/mcal/Gpt
+    tests/fixtures
+)
+target_link_libraries(test_pdur PRIVATE bsw_services platform)
+autosar_apply_warnings(test_pdur)
+add_test(NAME test_pdur COMMAND test_pdur)

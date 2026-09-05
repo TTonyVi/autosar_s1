@@ -11,6 +11,7 @@
 
 #include "Det.h"
 #include "Det_ModuleIds.h"
+#include "PduR.h"
 
 #define CANIF_API_ID_INIT ((Det_ApiIdType)1U)
 #define CANIF_API_ID_SET_CONTROLLER_MODE ((Det_ApiIdType)2U)
@@ -42,6 +43,11 @@ typedef struct {
 static CanIf_StateType g_state;
 
 void CanIf_Init(const CanIf_ConfigType *config) {
+    /* Set unconditionally before any validation, so a re-Init that fails
+     * partway through can never leave a PREVIOUS successful init's
+     * routing tables silently active. */
+    g_state.initialized = FALSE;
+
     if (config == NULL) {
         (void)Det_ReportError(DET_MODULE_ID_CANIF, 0U, CANIF_API_ID_INIT, DET_ERR_NULL_POINTER);
         return;
@@ -160,7 +166,7 @@ void CanIf_RxIndication(const Can_HwType *mailbox, const PduInfoType *info) {
             g_state.rxAcceptedCount++;
             g_state.lastRxPduId = rxPdu->canIfRxPduId;
             g_state.hasLastRxPduId = TRUE;
-            /* Phase 4 will add: PduR_CanIfRxIndication(rxPdu->canIfRxPduId, info); */
+            PduR_CanIfRxIndication(rxPdu->canIfRxPduId, info);
             return;
         }
     }
@@ -186,7 +192,7 @@ void CanIf_TxConfirmation(PduIdType tx_pdu_id) {
         return;
     }
     g_state.txConfirmationCount++;
-    /* Phase 4 will add: PduR_CanIfTxConfirmation(tx_pdu_id); */
+    PduR_CanIfTxConfirmation(tx_pdu_id);
 }
 
 uint32 CanIf_GetRxAcceptedCount(void) {

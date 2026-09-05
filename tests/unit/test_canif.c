@@ -1,14 +1,16 @@
 /**
  * @file test_canif.c
- * @brief Phase 3 unit tests for CanIf (bsw/communication/CanIf).
+ * @brief Phase 3/4 unit tests for CanIf (bsw/communication/CanIf).
  *
  * Covers section 14.1 ("test_canif") and the Phase 3 exit criteria
  * (section 16): wrong ID/DLC/controller-state cases on both the transmit
  * and receive paths, plus section 11.3's config validation
  * (REQ-CFG-001/003). Uses the REAL CanIf.c against a FAKE Can
- * (tests/fixtures/Can_Fake.c), so CanIf's own routing/validation logic is
- * tested deterministically without a real SocketCAN interface (that is
- * test_can's job, against the real Can.c).
+ * (tests/fixtures/Can_Fake.c) and, since Phase 4, a FAKE PduR
+ * (tests/fixtures/PduR_Fake.c) to verify CanIf forwards an accepted
+ * receive to `PduR_CanIfRxIndication` and a transmit's completion to
+ * `PduR_CanIfTxConfirmation` -- without needing a real SocketCAN
+ * interface (that is test_can's job, against the real Can.c).
  */
 #include <stdio.h>
 #include <string.h>
@@ -16,6 +18,7 @@
 #include "CanIf.h"
 #include "Can_Fake.h"
 #include "Det.h"
+#include "PduR_Fake.h"
 
 static int g_failures;
 
@@ -39,6 +42,7 @@ static const CanIf_ConfigType g_config = {g_txPdus, 1U, g_rxPdus, 1U};
 static void TestTransmitSuccessCallsCanWrite(void) {
     Det_Init();
     CanFake_Reset();
+    PduRFake_Reset();
     CanIf_Init(&g_config);
     CanFake_SetControllerModeDirect(CONTROLLER_ID, CAN_CS_STARTED);
 
@@ -56,6 +60,23 @@ static void TestTransmitSuccessCallsCanWrite(void) {
     Check(rec.id == 0x180U, "the physical CAN ID from config is used, not the logical PDU id");
     Check(rec.length == 8U, "the DLC matches");
     Check(memcmp(rec.data, data, 8U) == 0, "the payload bytes are forwarded verbatim");
+
+    CanIf_DeInit();
+}
+
+static void TestTxConfirmationForwardsToPduR(void) {
+    Det_Init();
+    CanFake_Reset();
+    PduRFake_Reset();
+    CanIf_Init(&g_config);
+
+    CanIf_TxConfirmation(0U);
+    Check(PduRFake_GetCanIfTxConfirmationCount() == 1U,
+          "a successful CanIf_TxConfirmation forwards to PduR_CanIfTxConfirmation (section 7.1 "
+          "rule 9)");
+    PduIdType confirmedId = 0xFFFFU;
+    Check(PduRFake_GetLastCanIfTxConfirmationId(&confirmedId), "a confirmation was recorded");
+    Check(confirmedId == 0U, "the CanIf-side tx pdu id is forwarded unchanged");
 
     CanIf_DeInit();
 }
@@ -118,6 +139,7 @@ static void TestTransmitControllerNotStartedRejected(void) {
 static void TestRxIndicationAcceptsMappedIdAndDlc(void) {
     Det_Init();
     CanFake_Reset();
+    PduRFake_Reset();
     CanIf_Init(&g_config);
 
     Can_HwType mailbox;
@@ -138,12 +160,19 @@ static void TestRxIndicationAcceptsMappedIdAndDlc(void) {
     Check(CanIf_GetLastRxPduId(&lastId) == E_OK, "the accepted PDU id is retrievable");
     Check(lastId == 0U, "it matches the configured canIfRxPduId");
 
+    Check(PduRFake_GetCanIfRxIndicationCount() == 1U,
+          "an accepted frame forwards to PduR_CanIfRxIndication (section 7.2)");
+    PduIdType forwardedId = 0xFFFFU;
+    Check(PduRFake_GetLastCanIfRxIndicationId(&forwardedId), "a forward was recorded");
+    Check(forwardedId == 0U, "the configured canIfRxPduId is forwarded");
+
     CanIf_DeInit();
 }
 
 static void TestRxIndicationRejectsUnmappedCanId(void) {
     Det_Init();
     CanFake_Reset();
+    PduRFake_Reset();
     CanIf_Init(&g_config);
 
     Can_HwType mailbox;
@@ -159,6 +188,8 @@ static void TestRxIndicationRejectsUnmappedCanId(void) {
     CanIf_RxIndication(&mailbox, &info);
     Check(CanIf_GetRxRejectedCount() == rejectedBefore + 1U,
           "an unmapped CAN ID is rejected (wrong-ID case)");
+    Check(PduRFake_GetCanIfRxIndicationCount() == 0U,
+          "a rejected frame is never forwarded to PduR");
 
     CanIf_DeInit();
 }
@@ -166,6 +197,7 @@ static void TestRxIndicationRejectsUnmappedCanId(void) {
 static void TestRxIndicationRejectsWrongDlc(void) {
     Det_Init();
     CanFake_Reset();
+    PduRFake_Reset();
     CanIf_Init(&g_config);
 
     Can_HwType mailbox;
@@ -185,6 +217,8 @@ static void TestRxIndicationRejectsWrongDlc(void) {
     PduIdType lastId = 0U;
     Check(CanIf_GetLastRxPduId(&lastId) == E_NOT_OK,
           "no accepted PDU id is recorded when every RxIndication so far was rejected");
+    Check(PduRFake_GetCanIfRxIndicationCount() == 0U,
+          "a rejected frame is never forwarded to PduR");
 
     CanIf_DeInit();
 }
@@ -220,6 +254,7 @@ static void TestUninitializedCallsRejected(void) {
     CanIf_DeInit();
     Det_Init();
     CanFake_Reset();
+    PduRFake_Reset();
     /* No CanIf_Init call at all. */
 
     uint8 data[8] = {0};
@@ -237,10 +272,16 @@ static void TestUninitializedCallsRejected(void) {
     mailbox.ControllerId = CONTROLLER_ID;
     CanIf_RxIndication(&mailbox, &info); /* must not crash */
     Check(CanIf_GetRxAcceptedCount() == 0U, "an RxIndication before Init is not accepted");
+    Check(PduRFake_GetCanIfRxIndicationCount() == 0U, "nothing is forwarded to PduR before Init");
+
+    CanIf_TxConfirmation(0U); /* must not crash */
+    Check(PduRFake_GetCanIfTxConfirmationCount() == 0U,
+          "a TxConfirmation before Init is not forwarded to PduR");
 }
 
 int main(void) {
     TestTransmitSuccessCallsCanWrite();
+    TestTxConfirmationForwardsToPduR();
     TestTransmitWrongDlcRejected();
     TestTransmitUnmappedPduIdRejected();
     TestTransmitControllerNotStartedRejected();

@@ -10,7 +10,7 @@ instruction (section 0.2, item 4).
 | 1 | Base MCAL, services, time, and scheduler | **Done** | See below. |
 | 2 | Virtual hardware links and input/output MCAL | **Done** | See below. |
 | 3 | Can Driver and CanIf | **Done** | See below. |
-| 4 | PduR and COM | Not started | |
+| 4 | PduR and COM | **Done** | See below. |
 | 5 | IoHwAb, RTE, and SW-Cs | Not started | |
 | 6 | EcuM and complete ECU integration | Not started | |
 | 7 | Tkinter HMI and scenario player | Not started | |
@@ -348,10 +348,140 @@ vcan passes"): unlike `VirtualHw` links, there is no fake substitute for
 the layer that owns the socket itself, matching `test_virtual_hw`'s same
 real-socket rationale in Phase 2.
 
+## Phase 4 — delivered
+
+- `bsw/communication/Com/ComProtection.{h,c}`: pure, stateless CRC8
+  (CRC-8/AUTOSAR: polynomial `0x1D`, init `0xFF`, no reflection, final
+  XOR `0xFF`) and alive-counter acceptance rule, split out of `Com.c`'s
+  stateful I-PDU logic the same way `VirtualHw_ParseUint` was split out
+  in Phase 2 — so it can be tested directly against section 6.5's three
+  golden vectors with no Det/Gpt/Com dependency at all.
+- `bsw/communication/Com/{Com.h,Com.c}`: signal shadow buffers, bit-level
+  pack/unpack using shifts and masks only (`REQ-COM-006`, no struct cast
+  onto the wire), cyclic Tx with absolute next-release timestamps (same
+  drift-free idiom as `Os_MainFunction`), and Rx validation in the exact
+  order section 6.5/7.2 require: DLC (`REQ-COM-002`) before CRC
+  (`REQ-COM-003`) before the alive counter before every signal's range
+  (`REQ-COM-004`) — all decoded into a local buffer and validated before
+  any state is committed, so a single invalid frame can never partially
+  update signals (`REQ-ASW-005`). Rx deadline supervision
+  (`REQ-COM-005`) is a separate `Com_MainFunctionRx` pass over a
+  monotonic last-valid-reception timestamp, queryable via
+  `Com_GetIpduRxTimeoutStatus`. A zero-argument `Com_SignalNotificationType`
+  callback (matching real AUTOSAR's `<Signal>_Rx_Notification` shape)
+  fires per signal on a fully valid receive, standing in for the RTE
+  that doesn't exist until Phase 5. Config validation is all-or-nothing
+  at `Com_Init` (index consistency, bit-overlap detection between
+  signals and against the counter/CRC bytes, DLC/period/timeout
+  sanity) — `REQ-CFG-001/003`. Two `_Static_assert`s pin down the
+  fixed-width type widths and the 8-byte wire length (`REQ-CFG-002`;
+  see the file's comment on why there's no `sizeof(struct) == 8` to
+  assert against directly, given `REQ-COM-006`).
+- `bsw/communication/PduR/{PduR.h,PduR.c}`: id-only static routing
+  between `Com` and `CanIf` (`REQ-ARCH-003` — never reads past a
+  `PduInfoType`'s length/pointer). `PduR_CanIfTxConfirmation` resolves
+  the COM-side id via a *reverse* lookup on the original Tx route (by
+  its CanIf-side destination), since a confirmation flows back along the
+  path the transmit request took.
+- `bsw/communication/CanIf/CanIf.c` now actually forwards: an accepted
+  `CanIf_RxIndication` calls `PduR_CanIfRxIndication`, and
+  `CanIf_TxConfirmation` calls `PduR_CanIfTxConfirmation` — completing
+  the section 7.1/7.2 chains that Phase 3 had stubbed with a comment.
+- **Real bug found and fixed**: `CanIf_Init`, `Com_Init`, and `PduR_Init`
+  all validate their config and return early on the first problem found,
+  but none of them reset their own "initialized" flag *before*
+  validating. A module re-initialized with a bad config after a prior
+  *successful* init would silently keep operating on the old config
+  instead of becoming uninitialized. Fixed by setting `initialized =
+  FALSE` unconditionally as the first statement in all three `_Init`
+  functions, before any validation runs. Found by `test_pdur`'s
+  duplicate-route test failing when run after another test's successful
+  `PduR_Init` left stale state behind — a genuine cross-test-order bug,
+  not a test artifact, since the same failure mode is reachable in
+  production by any two-call re-init sequence.
+- Extended `Det_ModuleIds.h` with `PDUR`, `COM`.
+- `tests/fixtures/Com_Fake.{h,c}` (new), `tests/fixtures/PduR_Fake.{h,c}`
+  (new), and `tests/fixtures/CanIf_Fake.{h,c}` extended with a
+  `CanIf_Transmit` fake role — `CanIf_Fake` now serves two different
+  test roles for the same real module depending on which direction is
+  under test (Phase 3's `CanIf_RxIndication`/`CanIf_TxConfirmation` role
+  for `test_can`, and a new `CanIf_Transmit` role for `test_pdur`).
+- `test_com_protection` (3 test functions, all three section 6.5 golden
+  vectors plus counter-validity edge cases), `test_com_pack` (11 test
+  functions, real `Com.c`/`ComProtection.c` against a fake `PduR` and
+  fake `Gpt` — directly exercises the Phase 4 exit criteria), `test_pdur`
+  (9 test functions, real `PduR.c` against a fake `CanIf`/`Com`) —
+  registered with `ctest`. `test_canif` extended with a `CanIf_TxConfirmation`
+  forwarding test and forwarding assertions added to its existing Rx
+  tests, now linking a fake `PduR` too.
+
+### Phase 4 exit criteria (spec section 16) — verification
+
+All verified in the same Ubuntu 20.04 dev sandbox as Phases 0-3 (same
+`cmake_minimum_required` temporary-lower/restore pattern):
+
+- [x] Build succeeds with **both** GCC 9.4.0 and Clang 10.0.0, zero
+      warnings, with the full mandatory warning set. One real
+      `-Wsign-conversion` (part of `-Wconversion` for C) violation found
+      and fixed on the first attempt: `(value >> i) & 0x1U` implicitly
+      converts the shift's promoted `int` result to `unsigned int`;
+      fixed with an explicit `(uint16)`/`(uint8)` cast on the shift
+      result before the mask in both `PackBits` and `UnpackBits`.
+- [x] `ctest` passes: 11/11 (adding `test_com_protection`, `test_com_pack`,
+      `test_pdur`), under both compilers -- but only after fixing the
+      real cross-test-order `_Init` staleness bug described above, first
+      caught by `test_pdur`.
+- [x] **"COM Tx produces exact expected bytes"**: `test_com_pack`'s
+      `TestTxProducesExactGoldenBytes` sends `VehicleSpeedRaw=1234,
+      IgnitionOn=1` and asserts the exact 8 bytes handed to
+      `PduR_ComTransmit` equal section 6.5's golden vector
+      `D2 04 01 00 19 00 00 00` byte-for-byte.
+- [x] **"raw CAN injection reaches a mock RTE callback"**:
+      `TestRxRawInjectionReachesMockRteCallback` hands section 6.5's
+      golden-vector bytes for `ClusterStatus` directly to
+      `Com_RxIndication` (playing the role of "CanIf/PduR already
+      delivered this raw frame", which Phase 3 tested separately) and
+      confirms a mock notification callback fires once per signal owned
+      by that PDU, with each signal then reading back its correctly
+      decoded value via `Com_ReceiveSignal`.
+- [x] `test_com_pack` additionally confirms: the alive counter advances
+      only after a successful `PduR_ComTransmit` call, not after a
+      failed one; cyclic Tx respects its configured period (no early
+      resend, no drift); nothing transmits before
+      `Com_IpduGroupStart` is called; `Com_SendSignal` rejects an
+      out-of-range value; a wrong DLC/CRC/skipped-counter/out-of-range
+      signal each invalidate the whole Rx PDU without touching previous
+      signal values or firing a notification (REQ-ASW-005), and the
+      correctly-sequenced frame right after a rejected one is still
+      accepted; Rx timeout supervision reports not-timed-out immediately
+      after a valid receive and timed-out once the configured deadline
+      elapses with no new valid frame.
+- [x] `test_pdur` confirms: `PduR_ComTransmit` forwards to
+      `CanIf_Transmit` with the resolved id and unchanged payload and
+      forwards a downstream failure rather than swallowing it;
+      `PduR_CanIfRxIndication` forwards to `Com_RxIndication`;
+      `PduR_CanIfTxConfirmation` forwards to `Com_TxConfirmation` via the
+      reverse route lookup; an unmapped id on any of the three is
+      rejected without forwarding; a duplicate route source is rejected
+      at `PduR_Init`; all three entry points reject calls before Init.
+- [x] `grep` for `clock_gettime`/`sys/socket.h`/`sys/un.h`/`linux/can.h`/
+      `linux/can/raw.h`/`AF_UNIX`/`AF_CAN`/`PF_CAN`/a `"/tmp/` literal
+      across `asw/ bsw/communication/ bsw/ecu_abstraction/ bsw/os/
+      bsw/services/ rte/ ecu/ platform/ tools/` (i.e. everywhere except
+      `bsw/mcal/` and the explicitly-exempt `tests/`) returns nothing
+      (`REQ-ARCH-009`) — unchanged from Phase 3 since Com/PduR touch no
+      socket or CAN-specific code at all.
+- [x] `grep` for `malloc`/`calloc`/`realloc`/`free` across
+      `bsw/ rte/ asw/ ecu/ platform/ tests/` still returns nothing.
+- [x] `clang-format --dry-run --Werror` passes on every `.c`/`.h` file
+      (found the same brace/line-wrap style violations as every prior
+      phase on new and modified files — fixed with `clang-format -i`,
+      re-verified clean).
+
 ## Not yet implemented
 
-`PduR`, `Com` (Phase 4); `IoHwAb`, RTE APIs, both SW-Cs (Phase 5); `EcuM`
-and the real ECU main-loop wiring, including the `Os_MainFunction` outer
-loop with `clock_nanosleep` (Phase 6); the Tkinter HMI and scenario player
+`IoHwAb`, RTE APIs, both SW-Cs (Phase 5); `EcuM` and the real ECU
+main-loop wiring, including the `Os_MainFunction` outer loop with
+`clock_nanosleep` (Phase 6); the Tkinter HMI and scenario player
 (Phase 7); sanitizers, remaining static checks, and full traceability
 (Phase 8).
