@@ -5,7 +5,9 @@
  * AUTOSAR_CLASSIC_PROJECT_SPEC_v1.1.md, section 8. Each ECU is a
  * single-threaded process; this is a simplified host realization of
  * task/runnable mapping, not a full AUTOSAR OS. All timing is derived from
- * `Gpt` (never a direct clock read — section 8.1).
+ * `Os_Counter` — the OS-owned counter over the dedicated `SysTimer`
+ * driver — never from `Gpt` and never from a direct clock read
+ * (section 8.1). `Gpt` serves the other BSW modules only.
  *
  * Design notes for Phase 1 (see docs/IMPLEMENTATION_STATUS.md):
  * - `Os_MainFunction` performs one scheduling pass: it does not sleep and
@@ -13,8 +15,8 @@
  *   `Os_MainFunction` repeatedly, optionally `clock_nanosleep` between
  *   calls per section 8.1's "MAY sleep") is wired into each ECU's main.c
  *   (under ecu/) in Phase 6. This keeps the scheduler itself pure logic, fully
- *   deterministic and host-independent, and testable with a fake `Gpt`
- *   without any real time passing.
+ *   deterministic and host-independent, and testable with a fake
+ *   `SysTimer` without any real time passing.
  * - Priority convention: a LARGER numeric `priority` value runs first
  *   when multiple tasks are due at the same check (REQ: "execute higher
  *   priority first"). This matches section 8.2's table, where the most
@@ -26,7 +28,7 @@
 #ifndef OS_H
 #define OS_H
 
-#include "Gpt.h"
+#include "Os_Counter.h"
 #include "Platform_Types.h"
 #include "Std_Types.h"
 
@@ -49,7 +51,7 @@ typedef struct {
     uint32 maxStartLatencyMs;
     uint32 maxExecTimeMs;
     uint32 missedCount;
-    Gpt_ValueType nextReleaseMs;
+    Os_MilliType nextReleaseMs;
 } Os_TaskStatsType;
 
 /** Fixed upper bound on the number of configured tasks (spec section 8.2
@@ -60,7 +62,7 @@ Std_ReturnType Os_Init(const Os_ConfigType *config);
 void Os_DeInit(void);
 
 /** Runs exactly one scheduling pass: checks all tasks against the current
- *  Gpt time, executes each due task once (in priority order), and updates
+ *  Os_Counter time, executes each due task once (in priority order), and updates
  *  per-task statistics. Never blocks, never sleeps. */
 void Os_MainFunction(void);
 

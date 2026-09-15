@@ -20,6 +20,7 @@
 typedef struct {
     boolean configured;
     Adc_GroupConfigType config;
+    uint32 readCount;
 } Adc_GroupStateType;
 
 static Adc_GroupStateType g_groups[ADC_MAX_GROUPS];
@@ -93,6 +94,7 @@ Std_ReturnType Adc_ReadGroup(Adc_GroupType group, Adc_ValueGroupType *data_buffe
      * resolution — plausibility is IoHwAb's judgment (Phase 5), not this
      * module's. */
     *data_buffer = (Adc_ValueGroupType)value;
+    g_groups[group].readCount++;
     return E_OK;
 }
 
@@ -125,6 +127,10 @@ Gpt_ValueType Adc_GetGroupAge(Adc_GroupType group) {
         return UINT32_MAX;
     }
     return ageMs;
+}
+
+uint32 Adc_GetGroupReadCount(Adc_GroupType group) {
+    return GroupIsValid(group) ? g_groups[group].readCount : 0U;
 }
 
 void Adc_MainFunction_Read(void) {

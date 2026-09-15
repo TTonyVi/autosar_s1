@@ -1,0 +1,1371 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AUTOSAR Speed Monitor Architecture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Saira+Condensed:wght@600;700&display=swap">
+<style>
+:root{
+  --paper:#EDF0F3; --surface:#FAFBFC; --surface-2:#E4E9EE;
+  --ink:#131A21; --ink-soft:#4C5865; --ink-faint:#76828E;
+  --rule:#D2DAE2; --rule-soft:#E1E7EC;
+  --accent:#9A5504; --accent-bg:#F6E9D8;
+  --ch-can:#A83A3A; --ch-can-bg:#F7E3E3;
+  --ch-sensor:#245E9C; --ch-sensor-bg:#DEEAF7;
+  --ch-display:#2C6F41; --ch-display-bg:#DEEEE3;
+  --yes:#2C6F41; --yes-bg:#DEEEE3;
+  --no:#6B7783; --no-bg:#E4E9EE;
+  --shadow:0 1px 2px rgba(19,26,33,.06), 0 8px 24px -16px rgba(19,26,33,.35);
+  --font-display:"Saira Condensed","Arial Narrow",system-ui,sans-serif;
+  --font-body:"Be Vietnam Pro",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+  --measure:68ch;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#0E141A; --surface:#151D25; --surface-2:#1D262F;
+    --ink:#E3E9EF; --ink-soft:#9BA8B4; --ink-faint:#6F7D89;
+    --rule:#26313C; --rule-soft:#1D262F;
+    --accent:#E0A050; --accent-bg:#2A2114;
+    --ch-can:#E06C75; --ch-can-bg:#3B1F1F;
+    --ch-sensor:#61AFEF; --ch-sensor-bg:#1F2A3B;
+    --ch-display:#98C379; --ch-display-bg:#1F3B26;
+    --yes:#98C379; --yes-bg:#1F3B26;
+    --no:#7E8C99; --no-bg:#1D262F;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0E141A; --surface:#151D25; --surface-2:#1D262F;
+  --ink:#E3E9EF; --ink-soft:#9BA8B4; --ink-faint:#6F7D89;
+  --rule:#26313C; --rule-soft:#1D262F;
+  --accent:#E0A050; --accent-bg:#2A2114;
+  --ch-can:#E06C75; --ch-can-bg:#3B1F1F;
+  --ch-sensor:#61AFEF; --ch-sensor-bg:#1F2A3B;
+  --ch-display:#98C379; --ch-display-bg:#1F3B26;
+  --yes:#98C379; --yes-bg:#1F3B26;
+  --no:#7E8C99; --no-bg:#1D262F;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
+}
+
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion: reduce){html{scroll-behavior:auto}}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font-family:var(--font-body); font-size:15px; line-height:1.65;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--accent); text-underline-offset:2px}
+a:focus-visible,button:focus-visible{outline:2px solid var(--accent); outline-offset:2px; border-radius:2px}
+
+/* ---------- masthead ---------- */
+.masthead{
+  border-bottom:1px solid var(--rule); background:var(--surface);
+}
+.masthead-in{
+  max-width:1220px; margin:0 auto; padding:34px 28px 26px;
+  display:flex; flex-wrap:wrap; gap:22px; align-items:flex-end; justify-content:space-between;
+}
+.eyebrow{
+  font-family:var(--font-mono); font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--ink-faint); margin:0 0 8px;
+}
+.masthead h1{
+  font-family:var(--font-display); font-weight:700; font-size:clamp(34px,5.2vw,52px);
+  line-height:1.02; letter-spacing:.005em; margin:0; text-wrap:balance; color:var(--ink);
+}
+.masthead .lede{
+  margin:12px 0 0; max-width:60ch; color:var(--ink-soft); font-size:14.5px;
+}
+.facts{
+  display:grid; gap:10px 26px; grid-template-columns:repeat(auto-fit,minmax(128px,max-content));
+  font-family:var(--font-mono); font-size:12px;
+}
+.facts dt{color:var(--ink-faint); letter-spacing:.06em; text-transform:uppercase; font-size:10.5px}
+.facts dd{margin:2px 0 0; color:var(--ink); font-variant-numeric:tabular-nums}
+
+/* ---------- shell ---------- */
+.shell{
+  max-width:1220px; margin:0 auto; padding:0 28px 96px;
+  display:grid; grid-template-columns:218px minmax(0,1fr); gap:52px; align-items:start;
+}
+@media (max-width:900px){ .shell{grid-template-columns:minmax(0,1fr); gap:0} }
+
+.toc{position:sticky; top:26px; padding-top:38px}
+@media (max-width:900px){
+  .toc{position:static; padding:26px 0 0; border-bottom:1px solid var(--rule); margin-bottom:26px}
+}
+.toc-title{
+  font-family:var(--font-mono); font-size:10.5px; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--ink-faint); margin:0 0 14px;
+}
+.toc ol{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:1px}
+@media (max-width:900px){ .toc ol{flex-direction:row; flex-wrap:wrap; gap:6px} }
+.toc a{
+  display:block; padding:6px 10px; border-left:2px solid var(--rule-soft);
+  color:var(--ink-soft); text-decoration:none; font-size:13.5px; line-height:1.35;
+}
+.toc a:hover{color:var(--accent); border-left-color:var(--accent); background:var(--surface)}
+@media (max-width:900px){
+  .toc a{border-left:none; border:1px solid var(--rule); border-radius:3px; padding:5px 9px; font-size:12.5px}
+}
+
+.doc{padding-top:38px; min-width:0}
+
+/* ---------- sections ---------- */
+section{padding-bottom:14px}
+section + section{margin-top:54px; padding-top:44px; border-top:1px solid var(--rule)}
+.sec-head{margin-bottom:22px}
+.sec-src{
+  font-family:var(--font-mono); font-size:11px; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--accent); margin:0 0 7px;
+}
+h2{
+  font-family:var(--font-display); font-weight:700; font-size:clamp(26px,3.4vw,34px);
+  line-height:1.1; margin:0; text-wrap:balance; letter-spacing:.004em;
+}
+h3{
+  font-weight:700; font-size:17px; line-height:1.35; margin:36px 0 10px; text-wrap:balance;
+}
+p,ul,ol{max-width:var(--measure)}
+p{margin:0 0 15px}
+ul,ol{margin:0 0 16px; padding-left:22px}
+li{margin:0 0 7px}
+li::marker{color:var(--ink-faint)}
+strong{font-weight:600}
+em{color:var(--ink-soft)}
+code{
+  font-family:var(--font-mono); font-size:.875em; background:var(--surface-2);
+  padding:1.5px 5px; border-radius:3px; color:var(--ink);
+}
+.note{
+  max-width:var(--measure); background:var(--surface); border:1px solid var(--rule);
+  border-left:3px solid var(--accent); border-radius:0 4px 4px 0;
+  padding:14px 18px; margin:0 0 18px; font-size:14px; color:var(--ink-soft);
+}
+.note p:last-child{margin-bottom:0}
+.note strong{color:var(--ink)}
+
+/* ---------- diagram frames ---------- */
+figure{margin:24px 0 22px}
+.diagram{
+  background:var(--surface); border:1px solid var(--rule); border-radius:5px;
+  box-shadow:var(--shadow); overflow:hidden;
+}
+.diagram-bar{
+  display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+  padding:7px 10px 7px 14px; border-bottom:1px solid var(--rule); background:var(--surface-2);
+  font-family:var(--font-mono); font-size:11px; letter-spacing:.07em; text-transform:uppercase;
+  color:var(--ink-faint);
+}
+.db-title{color:var(--ink-soft)}
+.db-note{flex:1 1 auto; text-align:right}
+.zoom{display:flex; align-items:center; gap:2px; flex:0 0 auto}
+.zoom button{
+  font-family:var(--font-mono); font-size:12px; line-height:1; color:var(--ink-soft);
+  background:var(--surface); border:1px solid var(--rule); border-radius:3px;
+  padding:5px 8px; min-width:28px; cursor:pointer; letter-spacing:0;
+}
+.zoom button:hover{color:var(--accent); border-color:var(--accent)}
+.zoom button:active{background:var(--surface-2)}
+.zlevel{
+  min-width:46px; text-align:center; font-size:11px; color:var(--ink-faint);
+  font-variant-numeric:tabular-nums; letter-spacing:0;
+}
+.diagram-scroll{overflow:auto; padding:22px 18px; max-height:82vh; cursor:grab}
+.diagram-scroll.grabbing{cursor:grabbing; user-select:none}
+.diagram:fullscreen{border-radius:0; display:flex; flex-direction:column}
+.diagram:fullscreen .diagram-scroll{flex:1 1 auto; max-height:none}
+.mermaid{margin:0; font-family:var(--font-mono)}
+.mermaid svg{display:block}
+.diagram-hint{
+  margin:0; padding:7px 14px; border-top:1px solid var(--rule-soft);
+  background:var(--surface-2); font-family:var(--font-mono); font-size:10.5px;
+  letter-spacing:.05em; color:var(--ink-faint); max-width:none;
+}
+.mermaid:not([data-rendered]){font-size:0; line-height:0}
+.mermaid:not([data-rendered])::before{
+  content:"Rendering diagram…"; display:block; font-family:var(--font-mono);
+  font-size:12px; line-height:1.6; color:var(--ink-faint); padding:26px 0;
+}
+.mermaid[data-rendered="error"]{
+  text-align:left; white-space:pre; font-size:12px; color:var(--ink-soft);
+}
+figcaption{
+  font-size:13px; color:var(--ink-faint); margin-top:10px; max-width:var(--measure);
+}
+
+/* ---------- legend of line styles ---------- */
+.legend{
+  list-style:none; padding:0; margin:0 0 18px; max-width:var(--measure);
+  display:flex; flex-direction:column; gap:8px;
+}
+.legend li{display:flex; gap:12px; align-items:baseline; margin:0; font-size:14px}
+.legend .glyph{
+  font-family:var(--font-mono); font-size:12px; color:var(--accent);
+  background:var(--accent-bg); padding:2px 7px; border-radius:3px; flex:0 0 auto; min-width:52px; text-align:center;
+}
+
+/* ---------- channel chips ---------- */
+.chip{
+  display:inline-flex; align-items:center; gap:5px; font-family:var(--font-mono);
+  font-size:11.5px; padding:1px 7px; border-radius:3px; border:1px solid currentColor;
+  white-space:nowrap;
+}
+.chip.can{color:var(--ch-can); background:var(--ch-can-bg)}
+.chip.sensor{color:var(--ch-sensor); background:var(--ch-sensor-bg)}
+.chip.display{color:var(--ch-display); background:var(--ch-display-bg)}
+
+/* ---------- tables ---------- */
+.table-wrap{
+  overflow-x:auto; border:1px solid var(--rule); border-radius:5px; background:var(--surface);
+  box-shadow:var(--shadow); margin:20px 0 18px;
+}
+table{border-collapse:collapse; width:100%; min-width:620px; font-size:14px}
+th,td{text-align:left; padding:12px 16px; vertical-align:top; border-bottom:1px solid var(--rule-soft)}
+thead th{
+  font-family:var(--font-mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--ink-faint); background:var(--surface-2); border-bottom:1px solid var(--rule); white-space:nowrap;
+}
+tbody tr:last-child td{border-bottom:none}
+td.mod{white-space:nowrap; font-family:var(--font-mono); font-size:12.5px; color:var(--ink)}
+td.mod.many{white-space:normal; line-height:2}
+td.flag{text-align:center; white-space:nowrap}
+.flag-pill{
+  display:inline-block; font-family:var(--font-mono); font-size:11px; letter-spacing:.07em;
+  text-transform:uppercase; padding:2px 9px; border-radius:99px;
+}
+.flag-pill.y{color:var(--yes); background:var(--yes-bg)}
+.flag-pill.n{color:var(--no); background:var(--no-bg)}
+
+/* ---------- init order ladder ---------- */
+.ladder{list-style:none; margin:22px 0 20px; padding:0; max-width:760px; display:flex; flex-direction:column}
+.ladder-group{
+  display:grid; grid-template-columns:132px minmax(0,1fr); gap:18px;
+  padding:14px 0; border-top:1px solid var(--rule-soft);
+}
+.ladder-group:first-child{border-top:none}
+.ladder-why{
+  font-family:var(--font-mono); font-size:11px; line-height:1.5; letter-spacing:.04em;
+  color:var(--accent); text-transform:uppercase; padding-top:3px;
+}
+.ladder-steps{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:5px}
+.ladder-steps li{display:flex; gap:12px; align-items:baseline; margin:0; font-size:14px}
+.step-n{
+  font-family:var(--font-mono); font-size:11.5px; color:var(--ink-faint);
+  font-variant-numeric:tabular-nums; flex:0 0 22px; text-align:right;
+}
+@media (max-width:620px){
+  .ladder-group{grid-template-columns:minmax(0,1fr); gap:8px}
+}
+
+/* ---------- building analogy stack ---------- */
+.stack{
+  margin:20px 0; max-width:620px; border:1px solid var(--rule); border-radius:5px;
+  overflow:hidden; background:var(--surface); box-shadow:var(--shadow);
+}
+.floor{
+  display:grid; grid-template-columns:minmax(0,1fr) 140px; gap:14px; align-items:center;
+  padding:11px 16px; border-bottom:1px solid var(--rule-soft); font-size:14px;
+}
+.floor:last-child{border-bottom:none}
+.floor .role{color:var(--ink)}
+.floor .mod{
+  font-family:var(--font-mono); font-size:12.5px; color:var(--accent); text-align:right;
+}
+.floor.road{background:var(--ch-can-bg); border-top:1px solid var(--ch-can)}
+.floor.road .role{color:var(--ch-can); font-weight:600}
+.floor.road .mod{color:var(--ch-can)}
+
+/* ---------- journey steps ---------- */
+.journey{list-style:none; margin:20px 0; padding:0; max-width:760px}
+.journey > li{
+  display:grid; grid-template-columns:34px minmax(0,1fr); gap:14px;
+  padding:12px 0; border-top:1px solid var(--rule-soft); margin:0;
+}
+.journey > li:first-child{border-top:none}
+.j-n{
+  font-family:var(--font-mono); font-size:12px; color:var(--ink-faint);
+  font-variant-numeric:tabular-nums; padding-top:2px;
+}
+.j-body{font-size:14.5px}
+.j-body .who{font-family:var(--font-mono); font-size:12.5px; color:var(--accent)}
+.j-api{
+  display:block; font-family:var(--font-mono); font-size:12px; color:var(--ink-faint);
+  margin-top:4px;
+}
+.journey > li.crossing{background:var(--ch-can-bg); border-radius:4px; padding-left:10px; padding-right:10px}
+.journey > li.crossing .j-n,.journey > li.crossing .j-body{color:var(--ch-can)}
+.journey > li.crossing .j-body strong{color:var(--ch-can)}
+.ecu-band{
+  font-family:var(--font-mono); font-size:10.5px; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--ink-faint); margin:22px 0 2px;
+}
+
+footer{
+  max-width:1220px; margin:0 auto; padding:26px 28px 40px; border-top:1px solid var(--rule);
+  font-family:var(--font-mono); font-size:11.5px; color:var(--ink-faint);
+  display:flex; flex-wrap:wrap; gap:8px 22px; justify-content:space-between;
+}
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="masthead-in">
+    <div>
+      <p class="eyebrow">autosar_s1 · docs/ARCHITECTURE.md</p>
+      <h1>AUTOSAR Speed Monitor<br>Architecture</h1>
+      <p class="lede">
+        Companion to <code>AUTOSAR_CLASSIC_PROJECT_SPEC_v1.1.md</code>, not a replacement —
+        the specification is authoritative. This page is updated as each implementation
+        phase lands, so it stays true to the actual code rather than only the plan.
+      </p>
+    </div>
+    <dl class="facts">
+      <div><dt>Spec</dt><dd>v1.1</dd></div>
+      <div><dt>ECUs</dt><dd>Sensor + Cluster</dd></div>
+      <div><dt>Bus</dt><dd>vcan0</dd></div>
+      <div><dt>Phase</dt><dd>8 of 8 done</dd></div>
+    </dl>
+  </div>
+</header>
+
+<div class="shell">
+  <nav class="toc" aria-label="Contents">
+    <p class="toc-title">Contents</p>
+    <ol>
+      <li><a href="#layers">Layers and vertical paths</a></li>
+      <li><a href="#direction">Data flow vs. call direction</a></li>
+      <li><a href="#participants">Who participates in a cycle</a></li>
+      <li><a href="#init-order">EcuM initialization order</a></li>
+      <li><a href="#two-ecus">Data flow between the two ECUs</a></li>
+      <li><a href="#beginner">Hướng dẫn cho người mới (VI)</a></li>
+      <li><a href="#status">Implementation status</a></li>
+    </ol>
+  </nav>
+
+  <main class="doc">
+
+  <!-- ============ 1 ============ -->
+  <section id="layers">
+    <div class="sec-head">
+      <p class="sec-src">spec §3.1 — layer ownership</p>
+      <h2>Layers and vertical paths</h2>
+    </div>
+
+    <p>
+      <code>sensor_ecu</code> and <code>cluster_ecu</code> are two separate Ubuntu processes, each
+      with its own address space, PID, and memory — never one shared box — so the layer diagram is
+      drawn as two subgraphs, one per ECU, matching that fact directly instead of a caveat underneath
+      a merged picture.
+    </p>
+
+    <figure>
+      <div class="diagram">
+        <div class="diagram-bar"><span class="db-title">Layer stack — two ECUs, two processes</span><span class="db-note">arrows = may call</span><span class="zoom"><button type="button" data-z="out" title="Zoom out" aria-label="Zoom out">&minus;</button><span class="zlevel" aria-live="polite">100%</span><button type="button" data-z="in" title="Zoom in" aria-label="Zoom in">+</button><button type="button" data-z="fit" title="Fit to width">Fit</button><button type="button" data-z="full" title="Full screen" aria-label="Full screen">&#10530;</button></span></div>
+        <div class="diagram-scroll">
+<pre class="mermaid">
+flowchart TB
+    subgraph SENSOR["SensorEcu — separate Ubuntu process"]
+        direction TB
+        SASW["VehicleStateSwc"]
+        SRTE["Runtime Environment"]
+        subgraph SSVC["Service layer"]
+            SCOM["Com"]
+            SPDUR["PduR"]
+            SSRV["EcuM / Os / Os_Counter / Logger / Det / Dem"]
+        end
+        subgraph SEAL["ECU Abstraction layer"]
+            SCANIF["CanIf"]
+            SIOHWAB["IoHwAb"]
+        end
+        subgraph SMCAL["MCAL (Ubuntu implementation)"]
+            SCANDRV["Can"]
+            SADC["Adc"]
+            SDIO["Dio"]
+            SBASE["Mcu / Port / Gpt / SysTimer"]
+        end
+        SASW --&gt; SRTE
+        SRTE --&gt; SCOM --&gt; SPDUR --&gt; SCANIF --&gt; SCANDRV
+        SRTE --&gt; SIOHWAB
+        SIOHWAB --&gt; SADC
+        SIOHWAB --&gt; SDIO
+        SSRV -.-&gt; SRTE
+    end
+
+    subgraph CLUSTER["ClusterEcu — separate Ubuntu process"]
+        direction TB
+        CASW["ClusterControlSwc"]
+        CRTE["Runtime Environment"]
+        subgraph CSVC["Service layer"]
+            CCOM["Com"]
+            CPDUR["PduR"]
+            CSRV["EcuM / Os / Os_Counter / Logger / Det / Dem"]
+        end
+        subgraph CEAL["ECU Abstraction layer"]
+            CCANIF["CanIf"]
+            CIOHWAB["IoHwAb"]
+        end
+        subgraph CMCAL["MCAL (Ubuntu implementation)"]
+            CCANDRV["Can"]
+            CDISP["Display"]
+            CBASE["Mcu / Port / Gpt / SysTimer"]
+        end
+        CASW --&gt; CRTE
+        CRTE --&gt; CCOM --&gt; CPDUR --&gt; CCANIF --&gt; CCANDRV
+        CRTE --&gt; CIOHWAB --&gt; CDISP
+        CSRV -.-&gt; CRTE
+    end
+
+    CANBUS[["vcan0 — CAN bus&lt;br/&gt;ECU-to-ECU application data ONLY"]]
+    SENSORLINK[["Sensor virtual hw link&lt;br/&gt;raw ADC counts + DIO level"]]
+    DISPLAYLINK[["Display virtual hw link&lt;br/&gt;rendered cluster frame"]]
+    HOSTCLOCK(("Ubuntu host clock&lt;br/&gt;queried independently by each process&lt;br/&gt;no application data"))
+
+    SCANDRV &lt;--&gt; CANBUS
+    CANBUS &lt;--&gt; CCANDRV
+    SADC --&gt; SENSORLINK
+    SDIO --&gt; SENSORLINK
+    CDISP --&gt; DISPLAYLINK
+    SBASE -.-&gt; HOSTCLOCK
+    CBASE -.-&gt; HOSTCLOCK
+
+    classDef canChan fill:#F7E3E3,stroke:#A83A3A,color:#131A21
+    classDef sensorChan fill:#DEEAF7,stroke:#245E9C,color:#131A21
+    classDef displayChan fill:#DEEEE3,stroke:#2C6F41,color:#131A21
+    classDef hostChan fill:#E4E9EE,stroke:#76828E,color:#131A21
+    class CANBUS canChan
+    class SENSORLINK sensorChan
+    class DISPLAYLINK displayChan
+    class HOSTCLOCK hostChan
+</pre>
+        </div>
+        <p class="diagram-hint">Ctrl / &#8984; + scroll to zoom · drag to pan · Fit rescales to the frame · &#10530; opens full screen</p>
+      </div>
+    </figure>
+
+    <p>
+      Both ECUs happen to link the identical <code>bsw_mcal</code>/<code>bsw_ecuab</code> library
+      source (same <code>IoHwAb.c</code>, same <code>Can.c</code>) — that is why the two subgraphs
+      look structurally identical — but each ECU's static configuration
+      (<code>IoHwAb_ConfigSensor</code> vs. <code>IoHwAb_ConfigCluster</code>) determines which leaf
+      nodes it actually populates: <code>SensorEcu</code> never has a <code>Display</code> node
+      reachable, <code>ClusterEcu</code> never has <code>Adc</code>/<code>Dio</code> reachable. That
+      is a real build fact (each binary's <code>CMakeLists.txt</code> target links the whole library,
+      so the unused half sits as dead code in the other role's binary), not a simplification. The
+      only channel shared between the two processes is <code>vcan0</code>;
+      <span class="chip sensor">Sensor virtual hw link</span>,
+      <span class="chip display">Display virtual hw link</span>, and the host clock are each reached
+      by exactly one side.
+    </p>
+    <p>
+      Three separate destination nodes are drawn on purpose, not one merged “host” box:
+      <code>Can</code> reaches only <span class="chip can">vcan0</span>,
+      <code>Adc</code>/<code>Dio</code> reach only the <span class="chip sensor">sensor line</span>,
+      <code>Display</code> reaches only the <span class="chip display">display line</span>, and
+      <code>Mcu</code>/<code>Port</code>/<code>Gpt</code>/<code>SysTimer</code> touch the host
+      clock/process but carry no application data. A diagram that merged these into one box would
+      invite the (wrong) reading that sensor/display traffic and CAN traffic share a channel, which
+      the channel separation rules forbid.
+    </p>
+
+    <h3>Two vertical paths, both mandatory</h3>
+    <ul>
+      <li><strong>Communication path</strong> — <code>SW-C → RTE → Com → PduR → CanIf → Can → vcan0</code></li>
+      <li><strong>I/O path</strong> — <code>SW-C → RTE → IoHwAb → Adc / Dio / Display → virtual hardware link</code>
+        (sensor line for <code>Adc</code>/<code>Dio</code>, display line for <code>Display</code> — never the same link)</li>
+    </ul>
+
+    <div class="note">
+      <p>
+        The MCAL (<code>bsw/mcal/</code>) is the <strong>sole substitution boundary</strong>: every
+        host-specific artifact — sockets, file descriptors, <code>clock_gettime</code>, the CAN
+        interface name — lives at or below it. Porting to a real microcontroller means rewriting
+        <code>bsw/mcal/</code> and nothing else (<code>REQ-ARCH-012</code>).
+      </p>
+    </div>
+  </section>
+
+  <!-- ============ 2 ============ -->
+  <section id="direction">
+    <div class="sec-head">
+      <p class="sec-src">reading the arrows correctly</p>
+      <h2>Data flow direction vs. call direction</h2>
+    </div>
+
+    <p>
+      The diagram above draws arrows as <strong>call/dependency direction</strong> (“layer X is
+      allowed to call layer Y”), matching the spec’s “May call” table. That is not the same thing as
+      which way the bytes actually move — <code>IOHWAB --&gt; ADC</code> means “IoHwAb is allowed to
+      call into Adc”, not “data flows from IoHwAb to Adc”.
+    </p>
+    <p>
+      For the sensor input path the two directions are <em>opposite</em>: <code>Adc</code>/<code>Dio</code>
+      are <em>called</em> from above but <em>read</em> their data from below (the virtual hw link), then
+      hand it back up the same call chain via return values. Only the display output path happens to
+      have call direction and data direction pointing the same way.
+    </p>
+
+    <figure>
+      <div class="diagram">
+        <div class="diagram-bar"><span class="db-title">Actual data flow, split by ECU</span><span class="db-note">arrows = bytes</span><span class="zoom"><button type="button" data-z="out" title="Zoom out" aria-label="Zoom out">&minus;</button><span class="zlevel" aria-live="polite">100%</span><button type="button" data-z="in" title="Zoom in" aria-label="Zoom in">+</button><button type="button" data-z="fit" title="Fit to width">Fit</button><button type="button" data-z="full" title="Full screen" aria-label="Full screen">&#10530;</button></span></div>
+        <div class="diagram-scroll">
+<pre class="mermaid">
+flowchart LR
+    subgraph SENSOR_ECU["SensorEcu — input path"]
+        direction LR
+        SLINK[["Sensor virtual hw link&lt;br/&gt;raw ADC counts + DIO level"]]
+        SADC["Adc"]
+        SDIO["Dio"]
+        SIOHWAB["IoHwAb"]
+        SRTE["RTE"]
+        SASW["VehicleStateSwc"]
+        SCOM["Com"]
+        SPDUR["PduR"]
+        SCANIF["CanIf"]
+        SCAN["Can"]
+        SLINK --&gt; SADC --&gt; SIOHWAB
+        SLINK --&gt; SDIO --&gt; SIOHWAB
+        SIOHWAB --&gt; SRTE --&gt; SASW --&gt; SCOM
+        SCOM --&gt; SPDUR --&gt; SCANIF --&gt; SCAN
+    end
+
+    CANBUS[["vcan0 — CAN bus"]]
+    SCAN --&gt; CANBUS
+
+    subgraph CLUSTER_ECU["ClusterEcu — output path"]
+        direction LR
+        CCAN["Can"]
+        CCANIF["CanIf"]
+        CPDUR["PduR"]
+        CCOM["Com"]
+        CASW["ClusterControlSwc"]
+        CIOHWAB["IoHwAb"]
+        CDISP["Display"]
+        DLINK[["Display virtual hw link&lt;br/&gt;rendered cluster frame"]]
+        CCAN --&gt; CCANIF --&gt; CPDUR --&gt; CCOM --&gt; CASW
+        CASW --&gt; CIOHWAB --&gt; CDISP --&gt; DLINK
+    end
+    CANBUS --&gt; CCAN
+
+    classDef sensorChan fill:#DEEAF7,stroke:#245E9C,color:#131A21
+    classDef displayChan fill:#DEEEE3,stroke:#2C6F41,color:#131A21
+    classDef canChan fill:#F7E3E3,stroke:#A83A3A,color:#131A21
+    class SLINK sensorChan
+    class DLINK displayChan
+    class CANBUS canChan
+</pre>
+        </div>
+        <p class="diagram-hint">Ctrl / &#8984; + scroll to zoom · drag to pan · Fit rescales to the frame · &#10530; opens full screen</p>
+      </div>
+      <figcaption>
+        RTE is omitted on the ClusterEcu side for brevity, but the real call chain still runs
+        <code>Com → RTE → SW-C → RTE → IoHwAb</code>, same as the SensorEcu side — RTE always
+        mediates SW-C access, it just doesn’t change which way the bytes flow.
+      </figcaption>
+    </figure>
+  </section>
+
+  <!-- ============ 3 ============ -->
+  <section id="participants">
+    <div class="sec-head">
+      <p class="sec-src">spec §8.2 — task configuration</p>
+      <h2>Who participates in one transmit/receive cycle</h2>
+    </div>
+
+    <p>
+      The two diagrams above only show modules that touch the payload. Most of the BSW never touches
+      a payload byte yet is still required for a single transmit/receive cycle to happen at all.
+      This diagram separates the four roles: <strong>startup</strong>, <strong>timing</strong>,
+      <strong>data</strong>, and <strong>diagnostics</strong>.
+    </p>
+
+    <figure>
+      <div class="diagram">
+        <div class="diagram-bar"><span class="db-title">Four rails of one cycle</span><span class="db-note">only rail 3 carries payload</span><span class="zoom"><button type="button" data-z="out" title="Zoom out" aria-label="Zoom out">&minus;</button><span class="zlevel" aria-live="polite">100%</span><button type="button" data-z="in" title="Zoom in" aria-label="Zoom in">+</button><button type="button" data-z="fit" title="Fit to width">Fit</button><button type="button" data-z="full" title="Full screen" aria-label="Full screen">&#10530;</button></span></div>
+        <div class="diagram-scroll">
+<pre class="mermaid">
+flowchart TB
+    subgraph STARTUP["1 · Startup rail — runs ONCE at power-on"]
+        direction LR
+        ECUM["EcuM&lt;br/&gt;drives the 19-step init order&lt;br/&gt;then enters ECUM_STATE_RUN"]
+        MCU["Mcu&lt;br/&gt;Mcu_Init / Mcu_InitClock&lt;br/&gt;core + clock up before anything else"]
+        PORT["Port&lt;br/&gt;Port_Init&lt;br/&gt;pin setup before any driver use"]
+        ECUM ==&gt; MCU ==&gt; PORT
+    end
+
+    subgraph TIMING["2 · Timing rail — runs FOREVER, releases everything below"]
+        direction LR
+        SYSTIMER["SysTimer&lt;br/&gt;the OS's OWN dedicated tick source&lt;br/&gt;SysTimer_GetTicks()"]
+        OSCOUNTER["Os_Counter&lt;br/&gt;reads ONLY SysTimer, never Gpt&lt;br/&gt;(REQ-ARCH-014)"]
+        GPT["Gpt&lt;br/&gt;general-purpose millisecond time base&lt;br/&gt;for every OTHER BSW module"]
+        OS["Os&lt;br/&gt;Os_MainFunction() releases the due task,&lt;br/&gt;highest priority first"]
+        T1["Task_Bsw_1ms"]
+        T5["Task_Io_5ms"]
+        T10["Task_App_10ms"]
+        T20["Task_BswCom_20ms"]
+        T100["Task_App_100ms"]
+        SYSTIMER -. "ticks" .-&gt; OSCOUNTER
+        OSCOUNTER -. "now = ? ms" .-&gt; OS
+        OS -. release .-&gt; T1
+        OS -. release .-&gt; T5
+        OS -. release .-&gt; T10
+        OS -. release .-&gt; T20
+        OS -. release .-&gt; T100
+    end
+
+    subgraph PATH["3 · Data path — the ONLY rail carrying application payload"]
+        direction TB
+        SWC["SW-C&lt;br/&gt;application decision"]
+        RTE["Rte&lt;br/&gt;SW-C ports to Com/IoHwAb calls"]
+        COM["Com&lt;br/&gt;signals to 8-byte I-PDU,&lt;br/&gt;alive counter + CRC, timeout supervision"]
+        PDUR["PduR&lt;br/&gt;static PDU routing, payload untouched"]
+        CANIF["CanIf&lt;br/&gt;PDU id to CAN id, DLC check"]
+        CAN["Can&lt;br/&gt;SocketCAN frame in/out"]
+        BUS[["vcan0 — CAN bus"]]
+        IOHWAB["IoHwAb&lt;br/&gt;scaling, plausibility, validity"]
+        IO["Adc / Dio / Display&lt;br/&gt;raw counts, level, rendered frame"]
+        LINK[["virtual hw link"]]
+        SWC &lt;--&gt; RTE
+        RTE &lt;--&gt; COM
+        COM &lt;--&gt; PDUR
+        PDUR &lt;--&gt; CANIF
+        CANIF &lt;--&gt; CAN
+        CAN &lt;--&gt; BUS
+        RTE &lt;--&gt; IOHWAB
+        IOHWAB &lt;--&gt; IO
+        IO &lt;--&gt; LINK
+    end
+
+    subgraph DIAG["4 · Diagnostic rail — never on the data path"]
+        direction LR
+        DET["Det&lt;br/&gt;synchronous development errors:&lt;br/&gt;null pointer, bad config, uninit call,&lt;br/&gt;Os deadline overrun"]
+        DEM["Dem&lt;br/&gt;production event state:&lt;br/&gt;Rx timeout, CRC/counter integrity,&lt;br/&gt;sensor/display link lost"]
+    end
+
+    ECUM ==&gt;|"_Init in order"| PATH
+    ECUM ==&gt;|"SysTimer_Init, Os_Counter_Init, Gpt_Init"| SYSTIMER
+    ECUM ==&gt;|"Os_Init, then start schedule"| OS
+
+    T1 -. "Can_MainFunction_Read / _Write" .-&gt; CAN
+    T5 -. "Adc/Dio_MainFunction_Read, IoHwAb_MainFunction, Display_MainFunction" .-&gt; IOHWAB
+    T10 -. "Rte_Task_10ms" .-&gt; RTE
+    T20 -. "Com_MainFunctionTx / Rx" .-&gt; COM
+    T100 -. "Rte_Task_100ms" .-&gt; SWC
+    T100 -. "Dem_MainFunction" .-&gt; DEM
+
+    GPT -. "Tx period, Rx deadline" .-&gt; COM
+    GPT -. "sample freshness age" .-&gt; IOHWAB
+
+    PATH -. "invalid param / bad config / uninit" .-&gt; DET
+    OS -. "deadline overrun" .-&gt; DET
+    COM -. "timeout, CRC/counter failure" .-&gt; DEM
+    IOHWAB -. "link lost, out of range" .-&gt; DEM
+
+    classDef busNode fill:#F7E3E3,stroke:#A83A3A,color:#131A21
+    classDef linkNode fill:#DEEAF7,stroke:#245E9C,color:#131A21
+    class BUS busNode
+    class LINK linkNode
+</pre>
+        </div>
+        <p class="diagram-hint">Ctrl / &#8984; + scroll to zoom · drag to pan · Fit rescales to the frame · &#10530; opens full screen</p>
+      </div>
+    </figure>
+
+    <h3>Line styles</h3>
+    <ul class="legend">
+      <li><span class="glyph">==&gt;</span><span>One-shot initialization.</span></li>
+      <li><span class="glyph">&lt;--&gt;</span><span>Application payload, moving in both directions.</span></li>
+      <li><span class="glyph">-.-&gt;</span><span>A call that carries no payload: a periodic release, a time query, an error report.</span></li>
+    </ul>
+
+    <h3>What each module contributes</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Module</th><th>Contribution to one tx/rx cycle</th><th>Payload?</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mod">Mcu</td>
+            <td>Brings up core and clock at startup so a time base can exist at all. Nothing during the cycle.</td>
+            <td class="flag"><span class="flag-pill n">No</span></td>
+          </tr>
+          <tr>
+            <td class="mod">Port</td>
+            <td>Configures pins/peripherals before any driver uses them. Nothing during the cycle.</td>
+            <td class="flag"><span class="flag-pill n">No</span></td>
+          </tr>
+          <tr>
+            <td class="mod">SysTimer</td>
+            <td>The OS's own dedicated tick source, read by nothing except <code>Os_Counter</code>
+                (<code>REQ-ARCH-014</code>) — a real ECU gives the OS a hardware timer no other module shares, for
+                exactly this reason.</td>
+            <td class="flag"><span class="flag-pill n">No</span></td>
+          </tr>
+          <tr>
+            <td class="mod">Os_Counter</td>
+            <td>Converts <code>SysTimer</code> ticks to milliseconds for <code>Os</code>. Never calls
+                <code>Gpt</code>; that separation is what a static check (grep for <code>Gpt_</code> under
+                <code>bsw/os/</code>) proves mechanically.</td>
+            <td class="flag"><span class="flag-pill n">No</span></td>
+          </tr>
+          <tr>
+            <td class="mod">Gpt</td>
+            <td>The monotonic ms source every OTHER periodic decision reads:
+                <code>Com</code> (“is the 20 ms period up? has the Rx deadline passed?”),
+                <code>IoHwAb</code> (“is this sample stale?”), <code>Display</code> (minimum write period),
+                <code>Dem</code>/<code>Logger</code> (timestamps). Never read by <code>Os</code> itself.</td>
+            <td class="flag"><span class="flag-pill n">No</span></td>
+          </tr>
+          <tr>
+            <td class="mod">Os</td>
+            <td>Actually calls every <code>_MainFunction</code>, timed by <code>Os_Counter</code>. Its fixed priority
+                order at a shared release instant (Io 5 ms before App 10 ms before Com 20 ms) is what lets one
+                sensor sample reach the bus within the same cycle instead of a period later.</td>
+            <td class="flag"><span class="flag-pill n">No</span></td>
+          </tr>
+          <tr>
+            <td class="mod">EcuM</td>
+            <td>Runs the 19-step init order once so every module below is ready before the first task runs
+                (<code>SysTimer</code>/<code>Os_Counter</code> before <code>Gpt</code>, both before diagnostics,
+                before drivers, before the comm stack, before the RTE); reverse order on shutdown. A single wrong
+                init step means the cycle never starts.</td>
+            <td class="flag"><span class="flag-pill n">No</span></td>
+          </tr>
+          <tr>
+            <td class="mod">Rte</td>
+            <td>The only way a SW-C reaches anything: maps SW-C ports onto <code>Com_SendSignal</code>/<code>Com_ReceiveSignal</code>
+                and <code>IoHwAb</code> calls. Carries payload but adds no logic of its own.</td>
+            <td class="flag"><span class="flag-pill y">Yes</span></td>
+          </tr>
+          <tr>
+            <td class="mod">Det</td>
+            <td>Synchronous development-error sink. Never part of a healthy cycle: if <code>Det</code> fires, a caller
+                violated a contract.</td>
+            <td class="flag"><span class="flag-pill n">No</span></td>
+          </tr>
+          <tr>
+            <td class="mod many">Adc · Dio · IoHwAb<br>Com · PduR · CanIf<br>Can · Display</td>
+            <td>The data path itself, detailed in the two diagrams above.</td>
+            <td class="flag"><span class="flag-pill y">Yes</span></td>
+          </tr>
+          <tr>
+            <td class="mod">Dem</td>
+            <td>Holds qualified fault state for events the cycle discovers (Rx timeout, CRC/counter failure, link lost,
+                out-of-range). <code>Dem_MainFunction</code> in the 100 ms task ages and qualifies them; the SW-C reads
+                the resulting state, it does not read <code>Dem</code> directly.</td>
+            <td class="flag"><span class="flag-pill n">No</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <p>
+        The practical reading: a payload byte only ever moves through <strong>rail 3</strong>, but it moves only
+        because <strong>rail 2</strong> released the task, and only because <strong>rail 1</strong> had already made
+        every module ready. Rails 1, 2 and 4 are what make the data path <em>deterministic and observable</em> rather
+        than merely functional.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============ 4 ============ -->
+  <section id="init-order">
+    <div class="sec-head">
+      <p class="sec-src">spec §9.2 — 19 ordered steps (v1.2)</p>
+      <h2>EcuM initialization order</h2>
+    </div>
+
+    <p>
+      <code>EcuM_Init</code> follows a fixed order. The order is not arbitrary — each group below can
+      only run once the group above it has finished. Shutdown (§9.3) is the same order reversed, so
+      every module is torn down only after everything that depends on it has already stopped.
+    </p>
+
+    <ol class="ladder">
+      <li class="ladder-group">
+        <div class="ladder-why">Clock first<br><span style="text-transform:none;letter-spacing:0">nothing runs without a time base</span></div>
+        <ul class="ladder-steps">
+          <li><span class="step-n">01</span><span>Initialize the logger</span></li>
+          <li><span class="step-n">02</span><span><code>Mcu_Init</code>, <code>Mcu_InitClock</code></span></li>
+        </ul>
+      </li>
+      <li class="ladder-group">
+        <div class="ladder-why">Then pins<br><span style="text-transform:none;letter-spacing:0">electrical setup precedes peripheral use</span></div>
+        <ul class="ladder-steps">
+          <li><span class="step-n">03</span><span><code>Port_Init</code></span></li>
+        </ul>
+      </li>
+      <li class="ladder-group">
+        <div class="ladder-why">Then the OS's own clock<br><span style="text-transform:none;letter-spacing:0">the scheduler must keep time before any module Gpt serves exists (REQ-ARCH-014)</span></div>
+        <ul class="ladder-steps">
+          <li><span class="step-n">04</span><span><code>SysTimer_Init</code> + start the OS tick source</span></li>
+          <li><span class="step-n">05</span><span><code>Os_Counter_Init</code>, zeroed against that tick source</span></li>
+          <li><span class="step-n">06</span><span><code>Gpt_Init</code> + start the general-purpose time base</span></li>
+        </ul>
+      </li>
+      <li class="ladder-group">
+        <div class="ladder-why">Then diagnostics<br><span style="text-transform:none;letter-spacing:0">so later failures are recordable, not silently lost</span></div>
+        <ul class="ladder-steps">
+          <li><span class="step-n">07</span><span><code>Det_Init</code></span></li>
+          <li><span class="step-n">08</span><span><code>Dem_Init</code></span></li>
+          <li><span class="step-n">09</span><span>Parse command-line (post-build-like) configuration</span></li>
+        </ul>
+      </li>
+      <li class="ladder-group">
+        <div class="ladder-why">Then drivers<br><span style="text-transform:none;letter-spacing:0">bottom-up through the MCAL</span></div>
+        <ul class="ladder-steps">
+          <li><span class="step-n">10</span><span>I/O MCAL drivers — <code>Adc_Init</code>/<code>Dio_Init</code> or <code>Display_Init</code></span></li>
+          <li><span class="step-n">11</span><span><code>Can_Init</code></span></li>
+        </ul>
+      </li>
+      <li class="ladder-group">
+        <div class="ladder-why">Then abstraction<br><span style="text-transform:none;letter-spacing:0">depends on those drivers being ready</span></div>
+        <ul class="ladder-steps">
+          <li><span class="step-n">12</span><span><code>IoHwAb_Init</code></span></li>
+        </ul>
+      </li>
+      <li class="ladder-group">
+        <div class="ladder-why">Then the stack<br><span style="text-transform:none;letter-spacing:0">each layer needs the one below it</span></div>
+        <ul class="ladder-steps">
+          <li><span class="step-n">13</span><span><code>CanIf_Init</code></span></li>
+          <li><span class="step-n">14</span><span><code>PduR_Init</code></span></li>
+          <li><span class="step-n">15</span><span><code>Com_Init</code></span></li>
+        </ul>
+      </li>
+      <li class="ladder-group">
+        <div class="ladder-why">Finally the RTE<br><span style="text-transform:none;letter-spacing:0">first layer allowed to reach application code</span></div>
+        <ul class="ladder-steps">
+          <li><span class="step-n">16</span><span><code>Rte_Start</code></span></li>
+          <li><span class="step-n">17</span><span>CAN controller to <code>CAN_CS_STARTED</code></span></li>
+          <li><span class="step-n">18</span><span>Start COM I-PDU group (with init enabled)</span></li>
+          <li><span class="step-n">19</span><span>Start OS schedule, enter <code>ECUM_STATE_RUN</code></span></li>
+        </ul>
+      </li>
+    </ol>
+
+    <p>
+      Implemented in <code>bsw/services/EcuM/EcuM.c</code> exactly as listed above; verified live by
+      running both ECUs and reading the printed §9.3 step-8 scheduler/DET summary at shutdown.
+    </p>
+  </section>
+
+  <!-- ============ 5 ============ -->
+  <section id="two-ecus">
+    <div class="sec-head">
+      <p class="sec-src">spec §7.5 — static routes</p>
+      <h2>Data flow between the two ECUs</h2>
+    </div>
+
+    <p>
+      The layer diagram shows one ECU in isolation. This one shows both ECUs together, walking the
+      same layers in both directions at once: <code>SensorEcu</code> transmitting
+      <code>VehicleStatus</code> (<code>0x180</code>) while simultaneously receiving
+      <code>ClusterStatus</code> (<code>0x181</code>), and vice versa for <code>ClusterEcu</code>.
+    </p>
+    <div class="note">
+      <p>
+        Both PDUs are equally real data paths. The thick/dotted line style here is used
+        <strong>only</strong> to tell the two PDUs apart at a glance — it does <em>not</em> mean
+        “mandatory vs. optional” the way it did in the layer diagram above.
+      </p>
+    </div>
+
+    <figure>
+      <div class="diagram">
+        <div class="diagram-bar"><span class="db-title">Both ECUs, both directions</span><span class="db-note">joined only at vcan0</span><span class="zoom"><button type="button" data-z="out" title="Zoom out" aria-label="Zoom out">&minus;</button><span class="zlevel" aria-live="polite">100%</span><button type="button" data-z="in" title="Zoom in" aria-label="Zoom in">+</button><button type="button" data-z="fit" title="Fit to width">Fit</button><button type="button" data-z="full" title="Full screen" aria-label="Full screen">&#10530;</button></span></div>
+        <div class="diagram-scroll">
+<pre class="mermaid">
+flowchart TB
+    subgraph SE["SensorEcu process"]
+        direction TB
+        SE_SWC["VehicleStateSwc"]
+        SE_RTE["RTE"]
+        SE_COM["Com"]
+        SE_PDUR["PduR"]
+        SE_CANIF["CanIf"]
+        SE_CAN["Can"]
+
+        SE_SWC ==&gt;|"Rte_Write_PpVehicleState_*"| SE_RTE
+        SE_RTE ==&gt;|"Com_SendSignal"| SE_COM
+        SE_COM ==&gt;|"pack 0x180&lt;br/&gt;cyclic 20ms"| SE_PDUR
+        SE_PDUR ==&gt; SE_CANIF ==&gt; SE_CAN
+
+        SE_CAN -.-&gt;|"CanIf_RxIndication"| SE_CANIF
+        SE_CANIF -.-&gt; SE_PDUR
+        SE_PDUR -.-&gt;|"Com_RxIndication"| SE_COM
+        SE_COM -.-&gt;|"unpack 0x181&lt;br/&gt;CRC+counter checked&lt;br/&gt;timeout 500ms"| SE_RTE
+        SE_RTE -.-&gt;|"Rte_Read_RpClusterStatus_*"| SE_SWC
+    end
+
+    BUS(("vcan0"))
+
+    subgraph CE["ClusterEcu process"]
+        direction TB
+        CE_SWC["ClusterControlSwc"]
+        CE_RTE["RTE"]
+        CE_COM["Com"]
+        CE_PDUR["PduR"]
+        CE_CANIF["CanIf"]
+        CE_CAN["Can"]
+
+        CE_CAN ==&gt;|"CanIf_RxIndication"| CE_CANIF
+        CE_CANIF ==&gt; CE_PDUR
+        CE_PDUR ==&gt;|"Com_RxIndication"| CE_COM
+        CE_COM ==&gt;|"unpack 0x180&lt;br/&gt;CRC+counter checked&lt;br/&gt;timeout 100ms"| CE_RTE
+        CE_RTE ==&gt;|"Rte_Read_RpVehicleState_*"| CE_SWC
+
+        CE_SWC -.-&gt;|"Rte_Write_PpClusterStatus_*"| CE_RTE
+        CE_RTE -.-&gt;|"Com_SendSignal"| CE_COM
+        CE_COM -.-&gt;|"pack 0x181&lt;br/&gt;cyclic 100ms"| CE_PDUR
+        CE_PDUR -.-&gt; CE_CANIF -.-&gt; CE_CAN
+    end
+
+    SE_CAN ==&gt;|"0x180 VehicleStatus"| BUS
+    BUS ==&gt;|"0x180 VehicleStatus"| CE_CAN
+    CE_CAN -.-&gt;|"0x181 ClusterStatus"| BUS
+    BUS -.-&gt;|"0x181 ClusterStatus"| SE_CAN
+</pre>
+        </div>
+        <p class="diagram-hint">Ctrl / &#8984; + scroll to zoom · drag to pan · Fit rescales to the frame · &#10530; opens full screen</p>
+      </div>
+    </figure>
+
+    <h3>Reading this diagram</h3>
+    <ul>
+      <li><strong>Thick arrows</strong> (<code>==&gt;</code>): the <code>0x180 VehicleStatus</code> path,
+          SensorEcu → ClusterEcu, produced every <strong>20 ms</strong>, with a <strong>100 ms</strong>
+          reception deadline monitored on the ClusterEcu side.</li>
+      <li><strong>Dotted arrows</strong> (<code>-.-&gt;</code>): the <code>0x181 ClusterStatus</code> path,
+          ClusterEcu → SensorEcu, produced every <strong>100 ms</strong>, with a <strong>500 ms</strong>
+          reception deadline monitored on the SensorEcu side.</li>
+      <li>Every box is used by <strong>both</strong> flows — <code>Com</code>, <code>PduR</code>,
+          <code>CanIf</code> and <code>Can</code> each run one Tx pipeline for the local ECU’s own PDU and one
+          Rx pipeline for the remote ECU’s PDU. There are not two separate copies of these modules.</li>
+      <li><span class="chip can">vcan0</span> is the only thing the two processes share. Nothing bypasses it —
+          the receiving <code>Com</code> only accepts a frame after <code>CanIf</code>/<code>PduR</code> hand it a
+          fully-formed I-PDU, and only after CRC + alive-counter validation does the RTE buffer update
+          (<code>REQ-COM-003</code>, <code>REQ-RTE-005</code>). A single invalid frame leaves the previous
+          application values untouched.</li>
+      <li>This is the <strong>communication path</strong> drawn twice (once per direction) and joined at the bus.
+          It does not include the <strong>I/O path</strong>, which is internal to each ECU and never reaches the
+          other one.</li>
+    </ul>
+  </section>
+
+  <!-- ============ 6 ============ -->
+  <section id="beginner">
+    <div class="sec-head">
+      <p class="sec-src">plain-language companion · tiếng Việt</p>
+      <h2>Hướng dẫn cho người mới</h2>
+    </div>
+
+    <p>
+      Phần này giải thích lại đúng sơ đồ “Data flow between the two ECUs” ở trên bằng phép ví von đời
+      thường, dành cho người mới tiếp cận AUTOSAR muốn nắm mô hình tư duy trước khi nhớ tên module.
+      Giữ nguyên tiếng Việt có chủ đích — viết cho người đọc Việt mới bắt đầu, không phải tài liệu
+      mức đặc tả.
+    </p>
+
+    <h3>Sơ đồ này nói về việc gì? — dùng phép ví von “gửi thư”</h3>
+    <p>
+      Hãy tưởng tượng 2 ECU là <strong>2 tòa nhà văn phòng</strong>, mỗi tòa có nhiều
+      <strong>phòng ban xếp chồng lên nhau</strong> theo tầng, và giữa 2 tòa có
+      <strong>một con đường chung duy nhất</strong> để xe chở thư chạy qua lại — đó chính là
+      <span class="chip can">vcan0</span>.
+    </p>
+
+    <div class="stack">
+      <div class="floor"><span class="role">Người viết / đọc thư</span><span class="mod">SW-C</span></div>
+      <div class="floor"><span class="role">Trợ lý riêng</span><span class="mod">RTE</span></div>
+      <div class="floor"><span class="role">Phòng đóng gói</span><span class="mod">Com</span></div>
+      <div class="floor"><span class="role">Phòng phân loại</span><span class="mod">PduR</span></div>
+      <div class="floor"><span class="role">Bưu cục</span><span class="mod">CanIf</span></div>
+      <div class="floor"><span class="role">Bãi xe chở thư (tầng trệt)</span><span class="mod">Can</span></div>
+      <div class="floor road"><span class="role">Con đường chung giữa 2 tòa nhà</span><span class="mod">vcan0</span></div>
+    </div>
+
+    <h3>Đi từng bước một lượt thư “tốc độ xe” từ SensorEcu sang ClusterEcu</h3>
+    <p>
+      Giả sử cảm biến đo được xe đang chạy 120 km/h. Đây là hành trình lá thư đi qua sơ đồ
+      (nhánh <strong>nét đậm</strong> trong hình):
+    </p>
+
+    <p class="ecu-band">Trong tòa SensorEcu</p>
+    <ol class="journey">
+      <li>
+        <span class="j-n">01</span>
+        <span class="j-body">
+          <span class="who">VehicleStateSwc</span> (người viết thư) viết nội dung <em>“tốc độ = 12000”</em>
+          (đơn vị 0.01 km/h). Người này <strong>không hề biết</strong> thư sẽ đi bằng phương tiện gì,
+          địa chỉ ra sao — chỉ đưa cho trợ lý.
+          <span class="j-api">Rte_Write_PpVehicleState_VehicleSpeedRaw(12000)</span>
+        </span>
+      </li>
+      <li>
+        <span class="j-n">02</span>
+        <span class="j-body">
+          <span class="who">RTE</span> (trợ lý riêng) nhận nội dung, chuyển xuống phòng đóng gói theo đúng
+          quy trình nội bộ đã định sẵn.
+          <span class="j-api">Com_SendSignal</span>
+        </span>
+      </li>
+      <li>
+        <span class="j-n">03</span>
+        <span class="j-body">
+          <span class="who">Com</span> (phòng đóng gói) gom nội dung này + trạng thái ignition +
+          một <strong>số thứ tự tăng dần</strong> (alive counter) + một <strong>con tem chống giả mạo</strong>
+          (CRC8) vào đúng 1 phong bì 8 byte, cứ <strong>20 ms lại gói và gửi một lần</strong> dù nội dung
+          có đổi hay không.
+          <span class="j-api">I-PDU VehicleStatus</span>
+        </span>
+      </li>
+      <li>
+        <span class="j-n">04</span>
+        <span class="j-body">
+          <span class="who">PduR</span> (phòng phân loại) nhìn vào bảng đã treo sẵn trên tường
+          (“PDU này → gửi ra bưu cục theo route số 0”), <strong>không đọc nội dung thư</strong>, chỉ chuyển
+          tiếp theo địa chỉ đã cấu hình sẵn.
+        </span>
+      </li>
+      <li>
+        <span class="j-n">05</span>
+        <span class="j-body">
+          <span class="who">CanIf</span> (bưu cục) dịch “tên gọi nội bộ của thư” thành
+          <strong>địa chỉ thật trên đường</strong> — ở đây là mã CAN ID <code>0x180</code>.
+        </span>
+      </li>
+      <li>
+        <span class="j-n">06</span>
+        <span class="j-body">
+          <span class="who">Can</span> (bãi xe) bỏ thư lên xe, chạy ra con đường chung.
+        </span>
+      </li>
+      <li class="crossing">
+        <span class="j-n">07</span>
+        <span class="j-body">
+          <strong>Xe chạy trên vcan0</strong> — đây là khoảnh khắc duy nhất lá thư rời khỏi tòa nhà SensorEcu.
+        </span>
+      </li>
+    </ol>
+
+    <p class="ecu-band">Trong tòa ClusterEcu</p>
+    <ol class="journey" start="8">
+      <li>
+        <span class="j-n">08</span>
+        <span class="j-body">
+          <span class="who">Can</span> bên ClusterEcu đứng ở bãi xe <strong>luôn để ý xem có xe nào từ đường
+          chạy vào không</strong> — không chặn tiến trình khác (non-blocking).
+        </span>
+      </li>
+      <li>
+        <span class="j-n">09</span>
+        <span class="j-body">
+          <span class="who">CanIf</span> nhận thư, thấy CAN ID <code>0x180</code> → tra bảng biết đây là PDU nào.
+        </span>
+      </li>
+      <li>
+        <span class="j-n">10</span>
+        <span class="j-body">
+          <span class="who">PduR</span> chuyển thư này tới đúng phòng <code>Com</code> phụ trách.
+        </span>
+      </li>
+      <li>
+        <span class="j-n">11</span>
+        <span class="j-body">
+          <span class="who">Com</span> <strong>xé phong bì</strong>: kiểm tra tem chống giả mạo (CRC) trước,
+          rồi kiểm tra số thứ tự có đúng “số liền trước + 1” không.
+          <strong>Nếu 1 trong 2 cái sai → vứt cả lá thư, không cập nhật gì hết</strong> — đây chính là ý nghĩa
+          dòng chữ “CRC+counter checked” trong sơ đồ.
+        </span>
+      </li>
+      <li>
+        <span class="j-n">12</span>
+        <span class="j-body">
+          Nếu thư hợp lệ, <code>Com</code> mới đưa nội dung cho <code>RTE</code>, và <code>RTE</code> mới đưa cho
+          <span class="who">ClusterControlSwc</span> (người đọc thư) — người này đọc được <em>“tốc độ = 12000”</em>
+          và tự quyết định: 120 km/h &gt; ngưỡng 100 km/h → chuyển trạng thái sang <strong>OVERSPEED</strong>.
+        </span>
+      </li>
+    </ol>
+
+    <h3>Vậy còn nhánh nét chấm là gì?</h3>
+    <p>
+      Đó là <strong>lá thư đi chiều ngược lại</strong>: <code>ClusterControlSwc</code> viết trạng thái cụm đồng
+      hồ (OFF/NORMAL/OVERSPEED…) rồi gửi ngược về cho <code>SensorEcu</code> biết, qua đúng các phòng ban y hệt
+      nhưng <strong>đi ngược chiều</strong>, đóng gói thành CAN ID khác (<code>0x181</code>), chu kỳ gửi thưa hơn
+      (100 ms thay vì 20 ms).
+    </p>
+    <p>
+      Điều thú vị: <strong>cùng một phòng <code>Com</code>, một phòng <code>PduR</code>, một bưu cục
+      <code>CanIf</code>, một bãi xe <code>Can</code></strong> — nhưng vừa xử lý thư gửi đi (<code>0x181</code>)
+      vừa xử lý thư nhận vào (<code>0x180</code>). Không phải 2 bộ phòng ban riêng biệt cho 2 chiều. Đó là lý do
+      trong sơ đồ, mỗi ô hình chữ nhật có <strong>cả mũi tên nét đậm lẫn nét chấm đi qua nó</strong>.
+    </p>
+
+    <h3>Vì sao phải qua nhiều phòng ban rắc rối vậy, gửi thẳng có được không?</h3>
+    <p>
+      Vì nếu <code>VehicleStateSwc</code> tự mình biết CAN ID là <code>0x180</code>, tự đóng gói byte, tự gọi
+      socket — thì khi thay đổi loại xe (đổi CAN ID) hoặc đổi hẳn sang chip vi điều khiển thật, ta phải
+      <strong>sửa lại code người viết thư</strong>. Nhưng với cách chia phòng ban này, người viết thư
+      <strong>không bao giờ phải đổi</strong> — chỉ có “bưu cục” (<code>CanIf</code>) hay “bãi xe”
+      (<code>Can</code>) cần đổi khi đổi phần cứng. Đây chính là lý do AUTOSAR chia lớp:
+      <strong>mỗi lỗi/thay đổi chỉ ảnh hưởng đúng 1 tầng</strong>, không lan ra toàn bộ tòa nhà.
+    </p>
+
+    <h3>Timeout (deadline) nghĩa là gì trong ví dụ này?</h3>
+    <p>
+      Nếu quá <strong>100 ms mà SensorEcu không thấy có thư mới nào từ ClusterEcu bay tới</strong>
+      (bình thường 100 ms có 1 thư), <code>SensorEcu</code> sẽ nghĩ <em>“chắc đường dây bị đứt hoặc tòa bên kia
+      sập”</em> → tự báo lỗi <code>DEM_EVENT_CLUSTER_STATUS_TIMEOUT</code>. Tương tự chiều ngược lại, nếu
+      ClusterEcu quá 100 ms không nhận được <code>0x180</code>, nó sẽ chuyển sang trạng thái
+      <code>COMM_FAULT</code> (mất liên lạc) — thay vì cứ hiển thị mãi tốc độ cũ như không có chuyện gì xảy ra,
+      điều đó rất nguy hiểm trên xe thật.
+    </p>
+
+    <div class="note">
+      <p>
+        <strong>Tóm gọn 1 câu:</strong> sơ đồ này là 2 tòa nhà giống hệt nhau, đứng quay lưng vào nhau, chia sẻ
+        đúng 1 con đường ở tầng trệt, và mỗi tòa vừa gửi thư đi vừa nhận thư về qua đúng các phòng ban đó —
+        không ai trong tòa nhà biết “con đường” trông ra sao, trừ đúng phòng <code>Can</code> ở tầng trệt.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============ 7 ============ -->
+  <section id="status">
+    <div class="sec-head">
+      <p class="sec-src">docs/IMPLEMENTATION_STATUS.md</p>
+      <h2>Implementation status</h2>
+    </div>
+    <p>
+      See <code>docs/IMPLEMENTATION_STATUS.md</code> for the full phase-by-phase record.
+      <strong>All 8 phases of the spec's section 16 plan are complete</strong> (plus the
+      between-4-and-5 SysTimer/Os_Counter split): both ECU executables run their full lifecycle over
+      real <code>vcan0</code>, every section 14.1 unit test and all seven section 14.2 integration
+      tests (IT-01 through IT-07) pass, the project builds and passes its full test suite under
+      AddressSanitizer and UndefinedBehaviorSanitizer with zero diagnostics, and the
+      <code>REQ-ARCH-012</code> stub-MCAL build is verified.
+    </p>
+    <p>
+      The layering, routing, and lifecycle behavior described above is therefore the <em>observed</em>
+      behavior of the code, not only its target. <code>docs/REQUIREMENTS_TRACEABILITY.md</code> covers
+      every <code>REQ-*</code> requirement in the specification.
+    </p>
+  </section>
+
+  </main>
+</div>
+
+<footer>
+  <span>autosar_s1 · docs/ARCHITECTURE.html — generated from docs/ARCHITECTURE.md</span>
+  <span>Authoritative source: AUTOSAR_CLASSIC_PROJECT_SPEC_v1.1.md</span>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js"></script>
+<script>
+(function () {
+  var LIGHT = {
+    theme: 'base',
+    themeVariables: {
+      background: '#FAFBFC',
+      primaryColor: '#FFFFFF', primaryTextColor: '#131A21', primaryBorderColor: '#B9C4CF',
+      secondaryColor: '#E4E9EE', tertiaryColor: '#EDF0F3',
+      lineColor: '#6D7B88', textColor: '#131A21',
+      clusterBkg: '#EDF0F3', clusterBorder: '#C3CDD7',
+      edgeLabelBackground: '#FAFBFC',
+      fontFamily: '"IBM Plex Mono", ui-monospace, Menlo, monospace',
+      fontSize: '14px'
+    }
+  };
+  var DARK = {
+    theme: 'base',
+    themeVariables: {
+      background: '#151D25',
+      primaryColor: '#1D262F', primaryTextColor: '#E3E9EF', primaryBorderColor: '#3A4854',
+      secondaryColor: '#151D25', tertiaryColor: '#0E141A',
+      lineColor: '#7E8C99', textColor: '#E3E9EF',
+      clusterBkg: '#0E141A', clusterBorder: '#2B3742',
+      edgeLabelBackground: '#151D25',
+      fontFamily: '"IBM Plex Mono", ui-monospace, Menlo, monospace',
+      fontSize: '14px'
+    }
+  };
+  /* classDef fills are authored for the light palette; swap them for dark. */
+  var SWAP = [
+    ['#F7E3E3', '#3B1F1F'], ['#A83A3A', '#E06C75'],
+    ['#DEEAF7', '#1F2A3B'], ['#245E9C', '#61AFEF'],
+    ['#DEEEE3', '#1F3B26'], ['#2C6F41', '#98C379'],
+    ['#E4E9EE', '#2B2B2B'], ['#76828E', '#8A949E'],
+    ['#131A21', '#E3E9EF']
+  ];
+
+  var blocks = Array.prototype.slice.call(document.querySelectorAll('pre.mermaid'));
+  blocks.forEach(function (el) { el.dataset.src = el.textContent; });
+
+  function isDark() {
+    var stamped = document.documentElement.getAttribute('data-theme');
+    if (stamped === 'dark') return true;
+    if (stamped === 'light') return false;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  }
+
+  function sourceFor(el, dark) {
+    var src = el.dataset.src;
+    if (!dark) return src;
+    return SWAP.reduce(function (acc, pair) {
+      return acc.split(pair[0]).join(pair[1]);
+    }, src);
+  }
+
+  function render() {
+    if (typeof mermaid === 'undefined') {
+      blocks.forEach(function (el) { el.setAttribute('data-rendered', 'error'); });
+      return;
+    }
+    var dark = isDark();
+    mermaid.initialize(Object.assign({
+        startOnLoad: false, securityLevel: 'loose',
+        flowchart: { useMaxWidth: false, htmlLabels: true }
+      }, dark ? DARK : LIGHT));
+    blocks.forEach(function (el, i) {
+      el.removeAttribute('data-processed');
+      el.removeAttribute('data-rendered');
+      var src = sourceFor(el, dark);
+      mermaid.render('mmd-' + i + '-' + (dark ? 'd' : 'l') + '-' + Date.now(), src)
+        .then(function (out) {
+          el.innerHTML = out.svg;
+          el.setAttribute('data-rendered', 'true');
+          measure(el);
+          applyZoom(el);
+        })
+        .catch(function (err) {
+          el.textContent = src;
+          el.setAttribute('data-rendered', 'error');
+          console.error('mermaid render failed', err);
+        });
+    });
+  }
+
+  var MIN = 0.3, MAX = 4;
+
+  function measure(el) {
+    var svg = el.querySelector('svg');
+    if (!svg) return;
+    var w = 0, h = 0, vb = svg.getAttribute('viewBox');
+    if (vb) {
+      var parts = vb.split(/[\s,]+/);
+      w = parseFloat(parts[2]); h = parseFloat(parts[3]);
+    }
+    if (!w || !h) { var r = svg.getBoundingClientRect(); w = r.width; h = r.height; }
+    el._natW = w; el._natH = h;
+    svg.removeAttribute('width');
+    svg.removeAttribute('height');
+    svg.style.maxWidth = 'none';
+    svg.style.width = w + 'px';
+    svg.style.height = h + 'px';
+  }
+
+  function applyZoom(el) {
+    var svg = el.querySelector('svg');
+    if (!svg || !el._natW) return;
+    var z = el._zoom || 1;
+    svg.style.transformOrigin = '0 0';
+    svg.style.transform = 'scale(' + z + ')';
+    el.style.width = (el._natW * z) + 'px';
+    el.style.height = (el._natH * z) + 'px';
+    var frame = el.closest('.diagram');
+    var lvl = frame && frame.querySelector('.zlevel');
+    if (lvl) lvl.textContent = Math.round(z * 100) + '%';
+  }
+
+  function setZoom(el, z) {
+    el._zoom = Math.min(MAX, Math.max(MIN, z));
+    applyZoom(el);
+  }
+
+  function fit(el) {
+    var pane = el.closest('.diagram-scroll');
+    if (!pane || !el._natW) return;
+    var avail = pane.clientWidth - 36;
+    setZoom(el, Math.min(MAX, avail / el._natW));
+  }
+
+  document.querySelectorAll('.diagram').forEach(function (frame) {
+    var el = frame.querySelector('pre.mermaid');
+    var pane = frame.querySelector('.diagram-scroll');
+    if (!el || !pane) return;
+    el._zoom = 1;
+
+    frame.querySelectorAll('.zoom button').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var what = btn.dataset.z;
+        if (what === 'in') setZoom(el, (el._zoom || 1) * 1.25);
+        else if (what === 'out') setZoom(el, (el._zoom || 1) / 1.25);
+        else if (what === 'fit') fit(el);
+        else if (what === 'full') {
+          if (document.fullscreenElement) { document.exitFullscreen(); }
+          else if (frame.requestFullscreen) { frame.requestFullscreen(); }
+        }
+      });
+    });
+
+    /* ctrl/cmd + wheel zooms, keeping the pointer roughly in place */
+    pane.addEventListener('wheel', function (e) {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      var before = el._zoom || 1;
+      var rect = pane.getBoundingClientRect();
+      var px = (pane.scrollLeft + e.clientX - rect.left) / before;
+      var py = (pane.scrollTop + e.clientY - rect.top) / before;
+      setZoom(el, before * (e.deltaY < 0 ? 1.12 : 1 / 1.12));
+      var after = el._zoom;
+      pane.scrollLeft = px * after - (e.clientX - rect.left);
+      pane.scrollTop = py * after - (e.clientY - rect.top);
+    }, { passive: false });
+
+    /* drag to pan */
+    var drag = null;
+    pane.addEventListener('mousedown', function (e) {
+      if (e.button !== 0) return;
+      drag = { x: e.clientX, y: e.clientY, l: pane.scrollLeft, t: pane.scrollTop };
+      pane.classList.add('grabbing');
+    });
+    window.addEventListener('mousemove', function (e) {
+      if (!drag) return;
+      pane.scrollLeft = drag.l - (e.clientX - drag.x);
+      pane.scrollTop = drag.t - (e.clientY - drag.y);
+    });
+    window.addEventListener('mouseup', function () {
+      drag = null;
+      pane.classList.remove('grabbing');
+    });
+  });
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', render);
+  } else {
+    render();
+  }
+
+  if (window.matchMedia) {
+    var mq = window.matchMedia('(prefers-color-scheme: dark)');
+    var onChange = function () { render(); };
+    if (mq.addEventListener) { mq.addEventListener('change', onChange); }
+    else if (mq.addListener) { mq.addListener(onChange); }
+  }
+  new MutationObserver(render).observe(document.documentElement, {
+    attributes: true, attributeFilter: ['data-theme']
+  });
+})();
+</script>
+
+</body>
+</html>

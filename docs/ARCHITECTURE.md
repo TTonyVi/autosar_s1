@@ -8,44 +8,76 @@ to the actual code rather than only the plan.
 
 ## Layers and vertical paths
 
+`sensor_ecu` and `cluster_ecu` are two separate Ubuntu processes, each
+with its own address space, PID, and memory — never one shared box — so
+the layer diagram is drawn as two subgraphs, one per ECU, matching that
+fact directly instead of a caveat underneath a merged picture:
+
 ```mermaid
 flowchart TB
-    ASW["Application SW-Cs"]
-    RTE["Runtime Environment"]
-    subgraph SVC["Service layer"]
-        COM["Com"]
-        PDUR["PduR"]
-        SRV["EcuM / Os / Det / Dem"]
+    subgraph SENSOR["SensorEcu — separate Ubuntu process"]
+        direction TB
+        SASW["VehicleStateSwc"]
+        SRTE["Runtime Environment"]
+        subgraph SSVC["Service layer"]
+            SCOM["Com"]
+            SPDUR["PduR"]
+            SSRV["EcuM / Os / Os_Counter / Logger / Det / Dem"]
+        end
+        subgraph SEAL["ECU Abstraction layer"]
+            SCANIF["CanIf"]
+            SIOHWAB["IoHwAb"]
+        end
+        subgraph SMCAL["MCAL (Ubuntu implementation)"]
+            SCANDRV["Can"]
+            SADC["Adc"]
+            SDIO["Dio"]
+            SBASE["Mcu / Port / Gpt / SysTimer"]
+        end
+        SASW --> SRTE
+        SRTE --> SCOM --> SPDUR --> SCANIF --> SCANDRV
+        SRTE --> SIOHWAB
+        SIOHWAB --> SADC
+        SIOHWAB --> SDIO
+        SSRV -.-> SRTE
     end
-    subgraph EAL["ECU Abstraction layer"]
-        CANIF["CanIf"]
-        IOHWAB["IoHwAb"]
+
+    subgraph CLUSTER["ClusterEcu — separate Ubuntu process"]
+        direction TB
+        CASW["ClusterControlSwc"]
+        CRTE["Runtime Environment"]
+        subgraph CSVC["Service layer"]
+            CCOM["Com"]
+            CPDUR["PduR"]
+            CSRV["EcuM / Os / Os_Counter / Logger / Det / Dem"]
+        end
+        subgraph CEAL["ECU Abstraction layer"]
+            CCANIF["CanIf"]
+            CIOHWAB["IoHwAb"]
+        end
+        subgraph CMCAL["MCAL (Ubuntu implementation)"]
+            CCANDRV["Can"]
+            CDISP["Display"]
+            CBASE["Mcu / Port / Gpt / SysTimer"]
+        end
+        CASW --> CRTE
+        CRTE --> CCOM --> CPDUR --> CCANIF --> CCANDRV
+        CRTE --> CIOHWAB --> CDISP
+        CSRV -.-> CRTE
     end
-    subgraph MCAL["MCAL (Ubuntu implementation)"]
-        CANDRV["Can"]
-        ADC["Adc"]
-        DIO["Dio"]
-        DISP["Display"]
-        BASE["Mcu / Port / Gpt"]
-    end
+
     CANBUS[["vcan0 — CAN bus\nECU-to-ECU application data ONLY"]]
     SENSORLINK[["Sensor virtual hw link\nraw ADC counts + DIO level"]]
     DISPLAYLINK[["Display virtual hw link\nrendered cluster frame"]]
-    HOSTCLOCK(("Ubuntu host clock/process\nno application data"))
+    HOSTCLOCK(("Ubuntu host clock\nqueried independently by each process\nno application data"))
 
-    ASW --> RTE
-    RTE --> COM --> PDUR --> CANIF --> CANDRV
-    RTE --> IOHWAB
-    IOHWAB --> ADC
-    IOHWAB --> DIO
-    IOHWAB --> DISP
-    SRV -.-> RTE
-
-    CANDRV --> CANBUS
-    ADC --> SENSORLINK
-    DIO --> SENSORLINK
-    DISP --> DISPLAYLINK
-    BASE -.-> HOSTCLOCK
+    SCANDRV <--> CANBUS
+    CANBUS <--> CCANDRV
+    SADC --> SENSORLINK
+    SDIO --> SENSORLINK
+    CDISP --> DISPLAYLINK
+    SBASE -.-> HOSTCLOCK
+    CBASE -.-> HOSTCLOCK
 
     classDef canChan fill:#3b1f1f,stroke:#e06c75,color:#fff
     classDef sensorChan fill:#1f2a3b,stroke:#61afef,color:#fff
@@ -57,14 +89,25 @@ flowchart TB
     class HOSTCLOCK hostChan
 ```
 
+Both ECUs happen to link the identical `bsw_mcal`/`bsw_ecuab` library
+source (same `IoHwAb.c`, same `Can.c`) — that is why the two subgraphs
+look structurally identical — but each ECU's static configuration
+(`IoHwAb_ConfigSensor` vs. `IoHwAb_ConfigCluster`) determines which leaf
+nodes it actually populates: `SensorEcu` never has a `Display` node
+reachable, `ClusterEcu` never has `Adc`/`Dio` reachable. That is a real
+build fact (each binary's `CMakeLists.txt` target links the whole
+library, so the unused half sits as dead code in the other role's
+binary), not a simplification. The only channel shared between the two
+processes is `vcan0`; `Sensor virtual hw link`, `Display virtual hw
+link`, and the host clock are each reached by exactly one side.
+
 Three separate destination nodes are drawn on purpose, not one merged
 "host" box: `Can` reaches only `vcan0`, `Adc`/`Dio` reach only the sensor
-line, `Display` reaches only the display line, and `Mcu`/`Port`/`Gpt` touch
-the host clock/process but carry no application data. All of these happen
-to run inside the same Ubuntu process in this simulation, but that is an
-implementation detail, not an architectural relationship — a diagram that
-merges them invites the (wrong) reading that sensor/display traffic and
-CAN traffic share a channel, which the channel table below forbids.
+line, `Display` reaches only the display line, and `Mcu`/`Port`/`Gpt`/
+`SysTimer` touch the host clock/process but carry no application data. A
+diagram that merged these into one box would invite the (wrong) reading
+that sensor/display traffic and CAN traffic share a channel, which the
+channel table below forbids.
 
 Two vertical paths, both mandatory:
 
@@ -78,40 +121,231 @@ rewriting `bsw/mcal/` and nothing else — see `REQ-ARCH-012`.
 
 Full layer ownership / allowed-dependency table: spec section 3.1.
 
+### Data flow direction vs. call direction
+
+The diagram above draws arrows as **call/dependency direction** ("layer X
+is allowed to call layer Y"), matching spec section 3.1's "May call"
+table. That is not the same thing as which way the bytes actually move —
+`IOHWAB --> ADC` means "IoHwAb is allowed to call into Adc", not "data
+flows from IoHwAb to Adc". For the sensor input path the two directions
+are opposite: `Adc`/`Dio` are *called* from above but *read* their data
+from below (the virtual hw link), then hand it back up the same call
+chain via return values. Only the display output path happens to have
+call direction and data direction pointing the same way.
+
+The diagram below shows the actual data flow, split by ECU, byte-oriented
+rather than call-oriented:
+
+```mermaid
+flowchart LR
+    subgraph SENSOR_ECU["SensorEcu — input path"]
+        direction LR
+        SLINK[["Sensor virtual hw link\nraw ADC counts + DIO level"]]
+        SADC["Adc"]
+        SDIO["Dio"]
+        SIOHWAB["IoHwAb"]
+        SRTE["RTE"]
+        SASW["VehicleStateSwc"]
+        SCOM["Com"]
+        SPDUR["PduR"]
+        SCANIF["CanIf"]
+        SCAN["Can"]
+        SLINK --> SADC --> SIOHWAB
+        SLINK --> SDIO --> SIOHWAB
+        SIOHWAB --> SRTE --> SASW --> SCOM
+        SCOM --> SPDUR --> SCANIF --> SCAN
+    end
+
+    CANBUS[["vcan0 — CAN bus"]]
+    SCAN --> CANBUS
+
+    subgraph CLUSTER_ECU["ClusterEcu — output path"]
+        direction LR
+        CCAN["Can"]
+        CCANIF["CanIf"]
+        CPDUR["PduR"]
+        CCOM["Com"]
+        CASW["ClusterControlSwc"]
+        CIOHWAB["IoHwAb"]
+        CDISP["Display"]
+        DLINK[["Display virtual hw link\nrendered cluster frame"]]
+        CCAN --> CCANIF --> CPDUR --> CCOM --> CASW
+        CASW --> CIOHWAB --> CDISP --> DLINK
+    end
+    CANBUS --> CCAN
+
+    classDef sensorChan fill:#1f2a3b,stroke:#61afef,color:#fff
+    classDef displayChan fill:#1f3b26,stroke:#98c379,color:#fff
+    classDef canChan fill:#3b1f1f,stroke:#e06c75,color:#fff
+    class SLINK sensorChan
+    class DLINK displayChan
+    class CANBUS canChan
+```
+
+(RTE is omitted on the ClusterEcu side above for brevity, but the real
+call chain still runs `CCOM -> RTE -> CASW -> RTE -> CIOHWAB`, same as the
+SensorEcu side — RTE always mediates SW-C access, it just doesn't change
+which way the bytes flow.)
+
+## Who participates in one transmit/receive cycle
+
+The two diagrams above only show modules that touch the payload. Most of
+the BSW never touches a payload byte yet is still required for a single
+transmit/receive cycle to happen at all. This diagram separates the four
+roles: startup, timing, data, and diagnostics.
+
+```mermaid
+flowchart TB
+    subgraph STARTUP["1 - Startup rail: runs ONCE at power-on"]
+        direction LR
+        ECUM["EcuM\ndrives the 19-step init order (section 9.2),\nthen enters ECUM_STATE_RUN"]
+        MCU["Mcu\nMcu_Init / Mcu_InitClock\ncore + clock up before anything else"]
+        PORT["Port\nPort_Init\npin/peripheral setup before any driver use"]
+        ECUM ==> MCU ==> PORT
+    end
+
+    subgraph TIMING["2 - Timing rail: runs FOREVER, releases everything below"]
+        direction LR
+        SYSTIMER["SysTimer\nthe OS's OWN dedicated tick source\nSysTimer_GetTicks()"]
+        OSCOUNTER["Os_Counter\nreads ONLY SysTimer, never Gpt\n(REQ-ARCH-014)"]
+        GPT["Gpt\ngeneral-purpose millisecond time base\nfor every OTHER BSW module"]
+        OS["Os\nOs_MainFunction() releases the due task,\nhighest priority first"]
+        T1["Task_Bsw_1ms"]
+        T5["Task_Io_5ms"]
+        T10["Task_App_10ms"]
+        T20["Task_BswCom_20ms"]
+        T100["Task_App_100ms"]
+        SYSTIMER -. "ticks" .-> OSCOUNTER
+        OSCOUNTER -. "now = ? ms" .-> OS
+        OS -. release .-> T1
+        OS -. release .-> T5
+        OS -. release .-> T10
+        OS -. release .-> T20
+        OS -. release .-> T100
+    end
+
+    subgraph PATH["3 - Data path: the ONLY rail carrying application payload"]
+        direction TB
+        SWC["SW-C\napplication decision"]
+        RTE["Rte\nSW-C ports to Com/IoHwAb calls"]
+        COM["Com\nsignals to 8-byte I-PDU,\nalive counter + CRC, timeout supervision"]
+        PDUR["PduR\nstatic PDU routing, payload untouched"]
+        CANIF["CanIf\nPDU id to CAN id, DLC check"]
+        CAN["Can\nSocketCAN frame in/out"]
+        BUS[["vcan0 - CAN bus"]]
+        IOHWAB["IoHwAb\nscaling, plausibility, validity"]
+        IO["Adc / Dio / Display\nraw counts, level, rendered frame"]
+        LINK[["virtual hw link"]]
+        SWC <--> RTE
+        RTE <--> COM
+        COM <--> PDUR
+        PDUR <--> CANIF
+        CANIF <--> CAN
+        CAN <--> BUS
+        RTE <--> IOHWAB
+        IOHWAB <--> IO
+        IO <--> LINK
+    end
+
+    subgraph DIAG["4 - Diagnostic rail: never on the data path"]
+        direction LR
+        DET["Det\nsynchronous development errors:\nnull pointer, bad config, uninit call,\nOs deadline overrun"]
+        DEM["Dem\nproduction event state:\nRx timeout, CRC/counter integrity,\nsensor/display link lost"]
+    end
+
+    ECUM ==>|"_Init in order"| PATH
+    ECUM ==>|"SysTimer_Init, Os_Counter_Init, Gpt_Init"| SYSTIMER
+    ECUM ==>|"Os_Init, then start schedule"| OS
+
+    T1 -. "Can_MainFunction_Read / _Write" .-> CAN
+    T5 -. "Adc/Dio_MainFunction_Read, IoHwAb_MainFunction, Display_MainFunction" .-> IOHWAB
+    T10 -. "Rte_Task_10ms" .-> RTE
+    T20 -. "Com_MainFunctionTx / Rx" .-> COM
+    T100 -. "Rte_Task_100ms" .-> SWC
+    T100 -. "Dem_MainFunction" .-> DEM
+
+    GPT -. "Tx period, Rx deadline" .-> COM
+    GPT -. "sample freshness age" .-> IOHWAB
+
+    PATH -. "invalid param / bad config / uninit" .-> DET
+    OS -. "deadline overrun" .-> DET
+    COM -. "timeout, CRC/counter failure" .-> DEM
+    IOHWAB -. "link lost, out of range" .-> DEM
+
+    classDef busNode fill:#3b1f1f,stroke:#e06c75,color:#fff
+    classDef linkNode fill:#1f2a3b,stroke:#61afef,color:#fff
+    class BUS busNode
+    class LINK linkNode
+```
+
+Line styles: thick `==>` is one-shot initialization, solid `<-->` is
+application payload moving in both directions, dotted is a call that
+carries no payload (a periodic release, a time query, an error report).
+
+| Module | Contribution to one tx/rx cycle | Payload? |
+|---|---|---|
+| `Mcu` | Brings up core and clock at startup so a time base can exist at all. Nothing during the cycle. | No |
+| `Port` | Configures pins/peripherals before any driver uses them. Nothing during the cycle. | No |
+| `SysTimer` | The OS's own dedicated tick source, read by nothing except `Os_Counter` (`REQ-ARCH-014`) — a real ECU gives the OS a hardware timer no other module shares, for exactly this reason. | No |
+| `Os_Counter` | Converts `SysTimer` ticks to milliseconds for `Os`. Never calls `Gpt`; that separation is what a static check (grep for `Gpt_` under `bsw/os/`) proves mechanically. | No |
+| `Gpt` | The monotonic ms source every OTHER periodic decision reads: `Com` ("is the 20 ms period up? has the Rx deadline passed?"), `IoHwAb` ("is this sample stale?"), `Display` (minimum write period), `Dem`/`Logger` (timestamps). Never read by `Os` itself. | No |
+| `Os` | Actually calls every `_MainFunction`, timed by `Os_Counter`. Its fixed priority order at a shared release instant (Io 5 ms before App 10 ms before Com 20 ms) is what lets one sensor sample reach the bus within the same cycle instead of a period later. | No |
+| `EcuM` | Runs the 19-step init order once so every module below is ready before the first task runs (`SysTimer`/`Os_Counter` before `Gpt`, both before diagnostics, before drivers, before the comm stack, before the RTE); reverse order on shutdown. A single wrong init step means the cycle never starts. | No |
+| `Rte` | The only way a SW-C reaches anything: maps SW-C ports onto `Com_SendSignal`/`Com_ReceiveSignal` and `IoHwAb` calls. Carries payload but adds no logic of its own. | Yes |
+| `Det` | Synchronous development-error sink. Never part of a healthy cycle: if `Det` fires, a caller violated a contract. | No |
+| `Adc` `Dio` `IoHwAb` `Com` `PduR` `CanIf` `Can` `Display` | The data path itself, detailed in the two diagrams above. | Yes |
+| `Dem` | Holds qualified fault state for events the cycle discovers (Rx timeout, CRC/counter failure, link lost, out-of-range). `Dem_MainFunction` in the 100 ms task ages and qualifies them; the SW-C reads the resulting state, it does not read `Dem` directly. | No |
+
+The practical reading: a payload byte only ever moves through rail 3, but
+it moves only because rail 2 released the task, and only because rail 1
+had already made every module ready. Rails 1, 2 and 4 are what make the
+data path *deterministic and observable* rather than merely functional.
+
 ## EcuM initialization order — rationale
 
-`EcuM_Init` follows a fixed order (spec section 9.2):
+`EcuM_Init` follows a fixed order (spec section 9.2, v1.2 — revised by the
+SysTimer/Os_Counter split, see the change log in section 0.3):
 
 1. Logger
 2. `Mcu_Init`, `Mcu_InitClock`
 3. `Port_Init`
-4. `Gpt_Init` + start time base
-5. `Det_Init`
-6. `Dem_Init`
-7. Parse command-line (post-build-like) configuration
-8. Input/output MCAL drivers (`Adc_Init`/`Dio_Init` or `Display_Init`)
-9. `Can_Init`
-10. `IoHwAb_Init`
-11. `CanIf_Init`
-12. `PduR_Init`
-13. `Com_Init`
-14. `Rte_Start`
-15. CAN controller to `CAN_CS_STARTED`
-16. Start COM I-PDU group (with init enabled)
-17. Start OS schedule, enter `ECUM_STATE_RUN`
+4. `SysTimer_Init` + start the OS tick source
+5. `Os_Counter_Init`, zeroed against that tick source
+6. `Gpt_Init` + start the general-purpose time base
+7. `Det_Init`
+8. `Dem_Init`
+9. Parse command-line (post-build-like) configuration
+10. Input/output MCAL drivers (`Adc_Init`/`Dio_Init` or `Display_Init`)
+11. `Can_Init`
+12. `IoHwAb_Init`
+13. `CanIf_Init`
+14. `PduR_Init`
+15. `Com_Init`
+16. `Rte_Start`
+17. CAN controller to `CAN_CS_STARTED`
+18. Start COM I-PDU group (with init enabled)
+19. Start OS schedule, enter `ECUM_STATE_RUN`
 
 This is the standard AUTOSAR ordering rationale applied to this project:
 **microcontroller and clock first** (nothing else can run without a time
 base), **then pin configuration** (`Port`, so peripheral electrical setup
-precedes any peripheral use), **then diagnostics** (`Det`/`Dem` before any
+precedes any peripheral use), **then the OS's own time source** (`SysTimer`
+before `Os_Counter`, both before the general-purpose `Gpt`, because the
+scheduler must be able to keep time before any module `Gpt` serves even
+exists — `REQ-ARCH-014`), **then diagnostics** (`Det`/`Dem` before any
 other module, so every later initialization failure is recordable rather
 than silently lost), **then drivers bottom-up** (MCAL, then `Can`), **then
 the ECU Abstraction layer** (`IoHwAb`) which depends on those drivers being
 ready, **then the communication stack bottom-up** (`CanIf` → `PduR` →
 `Com`, each depending on the layer initialized just before it), and
 **finally the RTE**, which is the first layer allowed to reach application
-code. Shutdown (section 9.3) is the same order reversed, so every module is
-torn down only after everything that depends on it has already stopped.
+code. Shutdown (section 9.3) is the same order reversed (`Gpt_DeInit` →
+`Os_Counter_DeInit` → `SysTimer_DeInit` last), so every module is torn
+down only after everything that depends on it has already stopped.
+
+Implemented in `bsw/services/EcuM/EcuM.c` (Phase 6) exactly as listed
+above; verified live by running both ECUs and reading the printed
+section 9.3 step-8 scheduler/DET summary at shutdown.
 
 ## Data flow between the two ECUs
 
@@ -292,8 +526,17 @@ vừa nhận thư về qua đúng các phòng ban đó — không ai trong tòa 
 
 ## Implementation status
 
-See `docs/IMPLEMENTATION_STATUS.md` for the current phase-by-phase status.
-As of Phase 0, only the directory skeleton, build graph, and placeholder
-executables exist; the layering, routing, and lifecycle behavior described
-above are the target this repository is being built toward, not yet the
-observed behavior of the code.
+See `docs/IMPLEMENTATION_STATUS.md` for the full phase-by-phase record.
+**All 8 phases of the spec's section 16 plan are complete** (plus the
+between-4-and-5 SysTimer/Os_Counter split): both ECU executables run their
+full lifecycle over real `vcan0`, every section 14.1 unit test and all
+seven section 14.2 integration tests (IT-01 through IT-07) pass, the
+project builds and passes its full test suite under AddressSanitizer and
+UndefinedBehaviorSanitizer with zero diagnostics, and the `REQ-ARCH-012`
+stub-MCAL build is verified. The layering, routing, and lifecycle
+behavior described above is therefore the *observed* behavior of the
+code, not only its target. `docs/REQUIREMENTS_TRACEABILITY.md` covers
+every `REQ-*` requirement in the specification.
+
+An HTML rendering of this document, with the diagrams pre-wired to render
+in a browser, lives next to it at `docs/ARCHITECTURE.html`.

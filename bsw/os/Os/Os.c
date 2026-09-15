@@ -6,6 +6,12 @@
 #include "Det.h"
 #include "Det_ModuleIds.h"
 
+/* The scheduler reads time ONLY through Os_Counter (spec section 8.1);
+ * `Gpt` belongs to the other BSW modules and must not appear here. */
+static Os_MilliType OsNowMs(void) {
+    return Os_Counter_TicksToMs(Os_Counter_GetValue());
+}
+
 #define OS_API_ID_INIT ((Det_ApiIdType)1U)
 #define OS_API_ID_MAIN_FUNCTION ((Det_ApiIdType)2U)
 #define OS_API_ID_GET_TASK_STATS ((Det_ApiIdType)3U)
@@ -41,7 +47,7 @@ Std_ReturnType Os_Init(const Os_ConfigType *config) {
     g_config = config;
     (void)memset(g_runtime, 0, sizeof(g_runtime));
 
-    Gpt_ValueType now = Gpt_GetTimeElapsed(GPT_CHANNEL_TIME_BASE);
+    Os_MilliType now = OsNowMs();
     for (uint8 i = 0U; i < config->numTasks; i++) {
         /* First release happens one period after Os_Init, not immediately
          * at init time — a deterministic, documented convention. */
@@ -63,7 +69,7 @@ void Os_MainFunction(void) {
         return;
     }
 
-    Gpt_ValueType now = Gpt_GetTimeElapsed(GPT_CHANNEL_TIME_BASE);
+    Os_MilliType now = OsNowMs();
 
     boolean due[OS_MAX_TASKS] = {FALSE};
     uint32 originalDue[OS_MAX_TASKS] = {0U};
@@ -117,9 +123,9 @@ void Os_MainFunction(void) {
             rt->maxStartLatencyMs = latency;
         }
 
-        Gpt_ValueType execStart = Gpt_GetTimeElapsed(GPT_CHANNEL_TIME_BASE);
+        Os_MilliType execStart = OsNowMs();
         g_config->tasks[idx].callback();
-        Gpt_ValueType execEnd = Gpt_GetTimeElapsed(GPT_CHANNEL_TIME_BASE);
+        Os_MilliType execEnd = OsNowMs();
         uint32 execTime = execEnd - execStart;
         if (execTime > rt->maxExecTimeMs) {
             rt->maxExecTimeMs = execTime;

@@ -30,6 +30,8 @@ typedef struct {
 } PduR_StateType;
 
 static PduR_StateType g_state;
+static uint32 g_comTransmitForwardCount;
+static uint32 g_canIfRxIndicationForwardCount;
 
 static const PduR_RouteType *FindRouteBySource(PduR_ModuleType module, PduIdType pduId) {
     for (uint8 i = 0U; i < g_state.numRoutes; i++) {
@@ -55,6 +57,8 @@ void PduR_Init(const PduR_ConfigType *config) {
      * partway through can never leave a PREVIOUS successful init's
      * routes silently active. */
     g_state.initialized = FALSE;
+    g_comTransmitForwardCount = 0U;
+    g_canIfRxIndicationForwardCount = 0U;
 
     if (config == NULL) {
         (void)Det_ReportError(DET_MODULE_ID_PDUR, 0U, PDUR_API_ID_INIT, DET_ERR_NULL_POINTER);
@@ -89,6 +93,8 @@ void PduR_Init(const PduR_ConfigType *config) {
 
 void PduR_DeInit(void) {
     (void)memset(&g_state, 0, sizeof(g_state));
+    g_comTransmitForwardCount = 0U;
+    g_canIfRxIndicationForwardCount = 0U;
 }
 
 Std_ReturnType PduR_ComTransmit(PduIdType id, const PduInfoType *info) {
@@ -102,6 +108,7 @@ Std_ReturnType PduR_ComTransmit(PduIdType id, const PduInfoType *info) {
                               DET_ERR_INVALID_PARAM);
         return E_NOT_OK;
     }
+    g_comTransmitForwardCount++;
     return CanIf_Transmit(route->destPduId, info);
 }
 
@@ -117,6 +124,7 @@ void PduR_CanIfRxIndication(PduIdType id, const PduInfoType *info) {
                               DET_ERR_INVALID_PARAM);
         return;
     }
+    g_canIfRxIndicationForwardCount++;
     Com_RxIndication(route->destPduId, info);
 }
 
@@ -136,4 +144,12 @@ void PduR_CanIfTxConfirmation(PduIdType id) {
         return;
     }
     Com_TxConfirmation(route->sourcePduId);
+}
+
+uint32 PduR_GetComTransmitForwardCount(void) {
+    return g_comTransmitForwardCount;
+}
+
+uint32 PduR_GetCanIfRxIndicationForwardCount(void) {
+    return g_canIfRxIndicationForwardCount;
 }

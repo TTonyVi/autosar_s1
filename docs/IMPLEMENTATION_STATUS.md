@@ -11,10 +11,11 @@ instruction (section 0.2, item 4).
 | 2 | Virtual hardware links and input/output MCAL | **Done** | See below. |
 | 3 | Can Driver and CanIf | **Done** | See below. |
 | 4 | PduR and COM | **Done** | See below. |
-| 5 | IoHwAb, RTE, and SW-Cs | Not started | |
-| 6 | EcuM and complete ECU integration | Not started | |
-| 7 | Tkinter HMI and scenario player | Not started | |
-| 8 | Robustness and handoff | Not started | |
+| 4.5 | SysTimer / Os_Counter split | **Done** | Not a spec phase; see below. |
+| 5 | IoHwAb, RTE, and SW-Cs | **Done** | See below. |
+| 6 | EcuM and complete ECU integration | **Done** | See below. |
+| 7 | Tkinter HMI and scenario player | **Done** | See below. |
+| 8 | Robustness and handoff | **Done** | See below. |
 
 ## Phase 0 — delivered
 
@@ -478,10 +479,369 @@ All verified in the same Ubuntu 20.04 dev sandbox as Phases 0-3 (same
       phase on new and modified files — fixed with `clang-format -i`,
       re-verified clean).
 
+## Phase 4.5 — delivered (SysTimer / Os_Counter split, not a spec phase)
+
+Requested between Phase 4 and Phase 5: separate the OS's time source from
+`Gpt`, matching real AUTOSAR (a dedicated hardware timer for the OS,
+`Gpt` for everything else). Spec updated to v1.2 (section 0.3) with the
+new module, new `REQ-ARCH-014`, and the section 9.2/9.3 init/shutdown
+order revised accordingly.
+
+- Created `bsw/mcal/SysTimer/` (`SysTimer.c/.h`, `SysTimer_Cfg.c/.h`):
+  reads `CLOCK_MONOTONIC` independently of `Gpt.c`, its own start
+  timestamp, never calls into `Gpt`.
+- Created `bsw/os/Os/Os_Counter.c/.h`: the OSEK-style counter layer that
+  reads `SysTimer` and converts ticks to milliseconds. Never calls
+  `Gpt_*` — enforced by a new static check (grep for `Gpt_` under
+  `bsw/os/`).
+- Rewired `Os.c`/`Os.h` to derive all timing from `Os_Counter`
+  (`Os_TaskStatsType.nextReleaseMs` changed type from `Gpt_ValueType` to
+  `Os_MilliType`, since `Os.h` no longer includes `Gpt.h`).
+- `Gpt` keeps its exact API and continues to serve Com, IoHwAb, Dem,
+  Display, and Logger — unchanged.
+- New fixture `tests/fixtures/SysTimer_Fake.c/.h`; `test_scheduler`
+  switched from the fake `Gpt` to the fake `SysTimer`.
+- New tests `test_systimer` (real driver against the real host clock,
+  like `test_virtual_hw`/`test_can`) and `test_os_counter` (real counter
+  against the fake `SysTimer`).
+- **Real bug found**: `Os_Counter` originally had no `_DeInit`, so
+  `test_os_counter`'s "read before init" case failed once a prior test in
+  the same binary had already called `Os_Counter_Init` — added
+  `Os_Counter_DeInit`, which Phase 6's `EcuM` shutdown also needed for
+  the reverse-order teardown (section 9.3).
+- Exit check: 13/13 tests, `clang-format` clean, `bsw/os/` grep for
+  `Gpt_` returns nothing, `clock_gettime` still only in `bsw/mcal/`.
+
+## Phase 5 — delivered (IoHwAb, RTE, SW-Cs)
+
+- `bsw/ecu_abstraction/IoHwAb/` (`IoHwAb.c/.h`, `IoHwAb_Cfg.c/.h`):
+  linear ADC-counts-to-km/h scaling with 32-bit intermediates, a
+  plausibility window, `IOHWAB_INPUT_TIMEOUT_MS` staleness, and
+  `IoHwAb_SetClusterDisplay` which formats the section 15.5.2 display
+  line and calls `Display_Write`. Two static configs,
+  `IoHwAb_ConfigSensor`/`IoHwAb_ConfigCluster` (`REQ-ARCH-005`).
+- `rte/common/Rte_Type.h`: the section 4.3/5.2 application types
+  (`VehicleSpeedRawType`, `ClusterStateType`, `Rte_ReturnType`, …) shared
+  by both SW-Cs and both RTEs — the only header, besides its own
+  generated one, a SW-C may include (`REQ-ARCH-001`).
+- `rte/generated/SensorEcu/Rte_SensorEcu.c` and
+  `rte/generated/ClusterEcu/Rte_ClusterEcu.c`: full generated-style RTE
+  implementations — signal mapping to `Com_SendSignal`/`Com_ReceiveSignal`
+  (`REQ-RTE-004`), reception health derived from COM's counters
+  (never/timeout/invalid/OK), the client-server adapter onto `IoHwAb`.
+- `asw/VehicleStateSwc/VehicleStateSwc.c` and
+  `asw/ClusterControlSwc/ClusterControlSwc.c`: the two SW-Cs, each
+  including only its own header and its generated `Rte_*.h`
+  (`REQ-ARCH-002`). `ClusterControlSwc` implements the full section 4.4
+  state machine with hysteresis and the three-frame recovery rule.
+- New fixtures: `Adc_Fake`, `Dio_Fake`, `Display_Fake`, `IoHwAb_Fake`,
+  `Rte_ClusterFake`; `Com_Fake` extended with a second role (the
+  signal-API surface the RTE calls, alongside its original PduR-facing
+  role).
+- New tests: `test_iohwab`, `test_rte_sensor`, `test_rte_cluster`,
+  `test_cluster_swc` — 40 cases total.
+- **Real bugs found and fixed**:
+  1. `Com_GetIpduRxTimeoutStatus` returns `boolean` (`TRUE` = success), not
+     `Std_ReturnType`; both RTEs originally compared it against `E_OK`
+     (which is `0`, i.e. `FALSE`), silently disabling timeout detection
+     entirely. Fixed to compare against the boolean contract directly.
+  2. `IoHwAb_MainFunction` reported `DEM_EVENT_SENSOR_LINK_LOST` once per
+     signal instead of once per sensor line; since one virtual hardware
+     datagram carries both the ADC and DIO values, the DIO sample's
+     verdict silently overwrote the ADC sample's. Fixed to aggregate one
+     verdict per activation across every signal on the ECU.
+- Exit check: 17/17 tests; REQ-ARCH-002/008 verified by grep (no SW-C
+  file includes a BSW/MCAL header or calls `IoHwAb_`/`Adc_`/`Dio_`/`Display_`).
+
+## Phase 6 — delivered (EcuM, static ECU config, executables, signals)
+
+- `bsw/services/Logger/` (new, named by sections 3.1/9.2/13.4): the
+  section 13.4 log line format, gated so it never reads `Gpt` before
+  `Gpt_Init` has run (the logger starts at init step 1, `Gpt` at step 6).
+- `bsw/services/EcuM/EcuM.c/.h`: one generic implementation for both
+  ECUs (`REQ-ARCH-005`) — a config struct of function-pointer-free,
+  mostly-`const`-pointer fields where a `NULL` module pointer means "this
+  ECU doesn't have that module". Runs the full section 9.2 order
+  (19 steps once `SysTimer`/`Os_Counter` are counted separately) and the
+  section 9.3 reverse order, including the scheduler/DET summary print.
+- `ecu/SensorEcu/config/SensorEcu_Cfg.c` and
+  `ecu/ClusterEcu/config/ClusterEcu_Cfg.c`: the link-time configuration
+  tables (CanIf Tx/Rx PDUs, PduR routes, COM signals/I-PDUs mirroring the
+  golden-vector layout from `test_com_pack`, the five section 8.2 tasks)
+  and the task bodies themselves. The only files on each ECU that know
+  both a CAN ID and a socket path.
+- `ecu/SensorEcu/main.c` / `ecu/ClusterEcu/main.c`: argument parsing
+  (`--can-if`, `--sensor-link`/`--display-link`, `--duration`,
+  `--log-level`, `--help`), `SIGINT`/`SIGTERM` handlers that only set an
+  atomic flag (`REQ-ECUM-003`), and the outer real-time loop.
+- **Real bugs found by actually running both ECUs together**:
+  1. The section 9.3 step-8 scheduler summary read `Os_GetTaskStats`
+     *after* `Os_DeInit`, so it printed all-zero stats and produced 5 Det
+     errors instead of a report. Fixed by deferring `Os_DeInit` to step 9
+     (leaving `ECUM_STATE_RUN` already stops new activations).
+  2. The outer loop slept a flat 1 ms between `EcuM_MainFunction` calls;
+     `nanosleep` always overshoots its request, so the 1 ms bus task
+     missed its own release on most iterations — 59 scheduler-overrun Det
+     errors per second of runtime. Fixed by polling at a quarter of the
+     shortest task period (250 µs) instead of the period itself; verified
+     0 missed activations over a 2-second run.
+  3. `DEM_EVENT_*` transition logging (added for section 15.8, see below)
+     skipped the very first transition of any event that was already
+     FAILED the first time it was observed (the normal case for a sensor
+     line with nothing plugged in yet) — a "seeded" flag gated the whole
+     first pass instead of just priming the previous-value table. Fixed
+     by seeding the table to PASSED instead.
+- Section 15.8 compliance added: `ClusterControlSwc` state transitions
+  and both ECUs' DEM status transitions are logged with a timestamp, but
+  only on change — verified this does not violate the section 13.4
+  bounded-log-volume rule.
+- `tests/unit/test_config.c` (spec section 14.1 "test_config"): validates
+  the actual shipping SensorEcu tables (accepted, zero Det errors, wired
+  end to end) plus duplicate-Rx-CAN-ID, PDU-index-mismatch,
+  duplicate-route-source, missing-route-at-runtime,
+  overlapping-signal-bits, signal-on-protection-field, wrong-DLC, and
+  Os-task-table rejection cases.
+- `tests/integration/` (new): the spec's own Phase 6 exit criterion is
+  "IT-01, IT-02, IT-05, IT-06, and IT-07 pass" — not merely "observed to
+  work" — so these are automated, not manual. `it_common.py` is the
+  shared harness (starts the real `sensor_ecu`/`cluster_ecu` binaries as
+  subprocesses, drives them through real `AF_UNIX` virtual hardware
+  links and the real `vcan0`, tears down with `SIGTERM`). Wired into
+  CTest under the `integration` label (`ctest -L integration`; excluded
+  from a bare `ctest` run since each test takes several real seconds,
+  unlike the millisecond unit tests):
+  - `test_it01_normal_e2e`: both ECUs plus `scenario_player.py` for 4s;
+    asserts `0x180`/`0x181` appear at their configured rates and the
+    cluster visits OFF, NORMAL, and OVERSPEED per the scenario.
+  - `test_it02_timeout_recovery`: stops `sensor_ecu`, asserts
+    `COMM_FAULT` within a documented margin around the spec's 120 ms
+    claim; restarts it, asserts recovery.
+  - `test_it05_virtual_hw_input`: a scripted client sends 120.00 km/h
+    onto the sensor line; asserts `12000 ± 4` raw units on `0x180`, a
+    steady-state Tx gap no larger than 3× the 20 ms period, `OVERSPEED`
+    on the bus and the display line together, and the 0/2048/4095-count
+    conversion sweep from section 4.1.2.
+  - `test_it06_sensor_disconnect`: stops sending on the sensor line
+    (CAN keeps running); asserts `DEM_EVENT_SENSOR_LINK_LOST` fails,
+    `SensorEcu` publishes speed 0/ignition off, and — the actual point of
+    the test — `ClusterEcu` does **not** enter `COMM_FAULT`, since a dead
+    sensor is not a dead bus; then asserts recovery.
+  - `test_it07_display_absent`: starts `ClusterEcu` with no display
+    listener for 3s (shortened from the spec's 10s to keep the suite
+    fast; the assertion — no crash, no stall, state machine unaffected —
+    is checked continuously throughout, not only at the end), asserts
+    `DEM_EVENT_DISPLAY_LINK_LOST` fails and the state machine is
+    unaffected, then attaches a listener and asserts recovery.
+- **Real bug found by IT-06** (only visible once a test actually read a
+  *running* ECU's log rather than just its final state): `Logger_Log`
+  never flushed `stdout`, and glibc fully buffers `stdout` whenever it is
+  not a TTY — the normal case for every demo script, every integration
+  test, and any real deployment under a supervisor. Every log line sat
+  in a libc buffer until the process exited, silently breaking section
+  15.8's "ECU stdout logs" observation surface for as long as the ECU
+  kept running. Fixed with an `fflush(stdout)` per line in `Logger_Log`
+  (section 13.4 already bounds log volume, so the cost is negligible).
+- Exit check: 18 unit + 5 integration tests, 23/23; REQ-ECUM-001 verified
+  by construction (CanIf `CAN_CS_STARTED` failure is the only path that
+  returns E_NOT_OK from `EcuM_Init` after `Can_Init`); REQ-ECUM-004
+  verified by calling `EcuM_Shutdown` twice in a row without a crash.
+- **Documented spec deviation**: `ecu/<Ecu>/main.c` contains the literal
+  default socket paths (`/tmp/vhw_sensor.sock`, etc.) required by section
+  15.4's `--sensor-link`/`--display-link` defaults. REQ-ARCH-009's
+  static check (section 14.3) is amended with an explicit exemption for
+  exactly this one file per ECU: the literal is an argument default
+  handed down into MCAL configuration, not a module above MCAL opening a
+  link itself.
+
+## Phase 7 — delivered (tools/hmi/, scenario player, demo scripts)
+
+- `tools/hmi/scenario_player.py`: parses and fully validates a CSV
+  against section 15.7 *before* sending a single datagram (malformed
+  input exits nonzero with a line number and sends nothing), then plays
+  step changes at their scheduled times with the `REQ-VHW-007` 100 ms
+  keepalive; `--loop` and `--speed-factor` implemented.
+- `tools/hmi/can_monitor.py`: read-only `AF_CAN`/`CAN_RAW` trace of
+  `vcan0`, decoding `0x180`/`0x181` per sections 6.3/6.4 independently of
+  any ECU log — the third of the section 15.8 observation surfaces.
+- `tools/hmi/vehicle_hmi.py`: the full Tkinter rig — sensor slider
+  (0.5 km/h step) plus numeric entry, ignition toggle, two fault-injection
+  checkboxes (disconnect the line; send out-of-range counts, per
+  `REQ-HMI-007`'s hardware-only fault-injection limit), the instrument
+  panel (big speed readout, state, three lamps, link-age), and a 200-row
+  CAN trace. Three daemon worker threads (`SensorRigSender`,
+  `DisplayLineReceiver`, `CanTraceReader`) push events through a
+  `queue.Queue`; only `Tk.after()` at 100 ms touches widgets
+  (`REQ-HMI-002`).
+- `tools/run_demo.sh`: starts `cluster_ecu`, `sensor_ecu`, and either the
+  HMI or `scenario_player.py --headless` with matching link paths;
+  `tools/inspect_can.sh`: prefers `candump` if installed, else falls back
+  to `can_monitor.py`.
+- `scenarios/default.csv` (the spec's own example) and
+  `scenarios/timeout_recovery.csv` (new, exercises a longer hold at
+  speed and a higher-speed excursion for manual timeout/recovery
+  observation).
+- **Real bugs found**:
+  1. Every Phase 7 script (and the pre-existing `hw_link.py` from an
+     earlier phase, which had never actually been run on this machine)
+     used PEP 585 generics (`list[str]`) evaluated eagerly; the sandbox's
+     Python is 3.8, so every script crashed on import with `TypeError:
+     'type' object is not subscriptable` before printing so much as
+     `--help`. Fixed with `from __future__ import annotations` in all
+     four files — this is exactly the failure class continuous testing
+     against the real interpreter is supposed to catch, and it had been
+     latent since whichever earlier phase wrote `hw_link.py`.
+  2. `vehicle_hmi.py`'s three worker-thread classes stored their stop
+     flag as `self._stop = threading.Event()`, which silently shadows
+     `threading.Thread`'s own private `_stop()` method — `Thread.join()`
+     then raises `TypeError: 'Event' object is not callable`. Caught by
+     a headless smoke test that starts a worker thread and joins it (no
+     display available in this environment to run the GUI itself).
+     Renamed to `self._stop_event`.
+  3. `speed_kph_to_counts` needed a documented negative-input clamp
+     (`hw_link.py`/`scenario_player.py`/`vehicle_hmi.py` all share the
+     same formula); verified by the headless check rather than assumed.
+- Verified live: `scenario_player.py --scenario scenarios/default.csv`
+  driving a real `sensor_ecu` end to end reproduces the exact state
+  sequence above; `can_monitor.py`/`inspect_can.sh` independently show
+  the `0x180`/`0x181` frames with correct alive-counter/CRC progression.
+  `vehicle_hmi.py` itself could not be visually verified (no display/Xvfb
+  in this environment) — its socket/threading logic was verified with a
+  headless script that exercises `SensorRigSender`, `DisplayLineReceiver`,
+  `parse_display_frame`, and `decode_can` directly; `pyflakes` and
+  `ast.parse` are clean on all four files.
+- Exit check: `pyflakes tools/hmi/*.py` clean; `bash -n` clean on both
+  new shell scripts; REQ-ARCH-011 (no ECU source import) and REQ-HMI-001
+  (stdlib only) verified by grep.
+
+## Phase 8 — delivered (robustness and handoff)
+
+- **IT-03 Integrity rejection** (`tests/integration/test_it03_integrity_rejection.py`):
+  hand-builds a `0x180` frame with a deliberately wrong CRC using an
+  independent Python re-implementation of CRC-8/AUTOSAR
+  (`it_common.compute_crc8`, verified against all three of section 6.5's
+  golden vectors before being trusted), injects it directly onto `vcan0`
+  with a raw `PF_CAN`/`SOCK_RAW` socket (`RawCanSender`) while `sensor_ecu`
+  is not even running, and asserts the corrupt value never reaches
+  `ClusterStatus` and `DEM_EVENT_VEHICLE_STATUS_INTEGRITY` fails; then
+  sends 3 valid frames and asserts recovery.
+  - **Real bug found**: none of the four COM-layer DEM events
+    (`DEM_EVENT_VEHICLE_STATUS_TIMEOUT`, `DEM_EVENT_VEHICLE_STATUS_INTEGRITY`,
+    `DEM_EVENT_CLUSTER_STATUS_TIMEOUT`, `DEM_EVENT_CLUSTER_STATUS_INTEGRITY`)
+    were ever actually set anywhere in the codebase — they were defined in
+    Phase 1 (`Dem.h`) and *read* since Phase 6 (the status log), but
+    nothing ever called `Dem_SetEventStatus` for them, a gap dating back
+    at least to Phase 6 that no earlier unit test could catch (COM's own
+    tests use a fake `Dem`-free config; the RTE tests use a fake `Com`
+    that never triggers real integrity/timeout detection). Fixed by
+    adding the calls to both RTEs' `UpdateReceptionHealth` (the one place
+    that already computes both conditions every cycle), which is also
+    the correct, spec-literal home per section 10.2's table ("Cluster
+    COM protection" / "Sensor COM/Rx supervision").
+  - **Test-design note**: IT-03's literal text ("application value is
+    unchanged") is ambiguous against section 4.4's own state diagram
+    ("`* --> COMM_FAULT: timeout or invalid data`") and the already-tested
+    `REQ-ASW-001`. Resolved by checking "unchanged" at the layer
+    `REQ-COM-003`/`REQ-ASW-005` actually govern — the corrupt frame's own
+    garbage value must never leak into `ClusterStatus` — while accepting
+    that the cluster SW-C correctly transitions to `COMM_FAULT` (display
+    0) on any single invalid reception, exactly as `test_cluster_swc`'s
+    `TestCommunicationInvalidityOutranksEverything` already established
+    in Phase 5.
+- **IT-04 Layered Tx/Rx evidence** (`tests/integration/test_it04_layered_evidence.py`):
+  added the two counters the spec explicitly asks for that didn't exist
+  yet (`PduR_GetComTransmitForwardCount`, `PduR_GetCanIfRxIndicationForwardCount`,
+  `Adc_GetGroupReadCount`, `IoHwAb_GetValidSampleCount`); wired every
+  layer's counter (RTE, COM, PduR, CanIf, Can, Adc, IoHwAb) into a new
+  bounded, once-per-second `[Layers]` log line on both ECUs (section 13.4
+  compliant); the test reads that same line back — "test instrumentation,
+  not an alternate data path", exactly as the requirement specifies — and
+  additionally cross-checks that `ClusterEcu`'s received-frame count never
+  exceeds `SensorEcu`'s confirmed-sent count, proving the counters are
+  evidence of the *same* exchange, not two coincidentally-incrementing
+  numbers.
+- **Sanitizer run**: a separate build tree
+  (`cmake -S . -B build-asan -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"`)
+  builds cleanly and all 19 unit tests plus all 7 integration tests
+  (`IT_BUILD_DIR=build-asan` env var, added to `tests/integration/it_common.py`
+  for exactly this purpose) pass with zero AddressSanitizer or
+  UndefinedBehaviorSanitizer diagnostics (checked explicitly by grepping
+  every ECU log for sanitizer output, not just trusting exit codes).
+  - **Real, reproducible finding**: `bsw/communication/Com/Com.c`'s
+    `PackBits`/`UnpackBits` — verified `-Wsign-conversion`-clean back in
+    Phase 4 by an explicit standalone experiment — fail that exact same
+    check under `-fsanitize=undefined` with the identical GCC 9.4.0 and
+    identical warning flags otherwise, confirmed by isolating the
+    difference to the sanitizer flag alone (`/tmp/sign_test3/4.c`, since
+    deleted). Fixed by assigning the shifted value to a named same-width
+    variable before the mask, instead of an inline cast immediately
+    before `&` — empirically verified clean under both flag sets this
+    time, not just the one that happened to be tested before.
+- **`REQ-ARCH-012` stub-MCAL build**: added a CMake cache variable
+  `AUTOSAR_MCAL_VARIANT` (`real`, the default, or `stub`) that swaps only
+  `bsw/mcal/Can/Can.c` and `bsw/mcal/VirtualHw/VirtualHw.c` for
+  `Can_Stub.c`/`VirtualHw_Stub.c` — new files implementing the identical
+  headers with an in-memory loopback queue and a single-slot latest-value
+  cell respectively, no `socket`/`clock_gettime` call anywhere in either.
+  Every other file, including `Adc.c`/`Dio.c`/`Display.c` (which already
+  only ever called `VirtualHw_*`, never a socket directly) and everything
+  in `rte/`/`asw/`/`ecu/`, is untouched.
+  - `tests/unit/test_stub_mcal.c` (new, always built, independent of the
+    CMake variant switch): links the REAL `Adc.c`/`Dio.c`/`CanIf.c`
+    completely unmodified against the STUB `Can_Stub.c`/`VirtualHw_Stub.c`,
+    proving the substitution seam itself — 12 checks, all passing.
+  - Full verification: configured and built `build-stubmcal/` with
+    `-DAUTOSAR_MCAL_VARIANT=stub` — clean build, zero errors/warnings, both
+    `sensor_ecu` and `cluster_ecu` produced. Ran each for 2 real seconds:
+    full section 9.2 init order completes, the section 8.2 task schedule
+    runs with 0-1 missed activations (same as the real-MCAL build), COM Tx
+    counters advance normally against `Can_Stub`, and `SIGTERM` shutdown
+    completes cleanly (exit 0) with the full section 9.3 reverse-order
+    teardown and scheduler summary printed. `test_can`/`test_virtual_hw`
+    are unaffected by the switch (their own `add_executable` always lists
+    the real `.c` files directly, since they exist specifically to test
+    the real socket-based drivers).
+  - **Documented, expected side effect, not a bug**: each stub-built ECU
+    logs ~50 `CanIf` `DET_ERR_INVALID_PARAM` records per second of
+    runtime. Cause: `Can_Stub`'s loopback queue is per-process, so each
+    ECU's own transmitted frame loops back to its own
+    `Can_MainFunction_Read` and reaches `CanIf_RxIndication` with a CAN ID
+    that ECU never configured itself to receive (`SensorEcu` only expects
+    `0x181` on Rx, `ClusterEcu` only `0x180`) — a condition that can never
+    happen on a real two-bus topology (`vcan0`, or two wires), where an
+    ECU only ever hears the *other* ECU's frames. Documented here rather
+    than silently filtered, since a stub-only Det pattern is exactly the
+    kind of detail a real microcontroller port needs to know does NOT
+    carry over.
+- Full traceability: every one of the spec's 69 distinct `REQ-*`
+  identifiers now has at least one row in
+  `docs/REQUIREMENTS_TRACEABILITY.md` (verified by diffing the set of IDs
+  grepped from the spec against the set grepped from the traceability
+  table — empty diff both directions). Five requirements
+  (`REQ-ARCH-004/006/007/010`, plus the newly-implemented `REQ-ARCH-012`)
+  were already true of the code but had never been given a row in any
+  earlier phase's pass; added under a new "Requirements not tied to one
+  phase's own section" heading rather than retroactively editing every
+  earlier phase section.
+- Architecture and test documents updated to match implementation:
+  this file, `docs/TEST_PLAN.md`, and `docs/REQUIREMENTS_TRACEABILITY.md`
+  all updated for Phase 8; `docs/ARCHITECTURE.md` was already current
+  (updated per-phase throughout, per the standing convention).
+- Exit check: 26/26 tests (19 unit + 7 integration) on the normal build;
+  19/19 unit + 7/7 integration under ASan+UBSan with zero diagnostics;
+  `test_stub_mcal` passes and both real ECU executables run their full
+  lifecycle correctly against the stub MCAL variant; `clang-format` clean
+  across every `.c`/`.h` touched this phase; every spec `REQ-*` id has a
+  traceability row.
+
 ## Not yet implemented
 
-`IoHwAb`, RTE APIs, both SW-Cs (Phase 5); `EcuM` and the real ECU
-main-loop wiring, including the `Os_MainFunction` outer loop with
-`clock_nanosleep` (Phase 6); the Tkinter HMI and scenario player
-(Phase 7); sanitizers, remaining static checks, and full traceability
-(Phase 8).
+Nothing required by `AUTOSAR_CLASSIC_PROJECT_SPEC_v1.1.md`'s section 16
+phase plan remains. Section 17's Definition of Done is reviewed item by
+item in `docs/REQUIREMENTS_TRACEABILITY.md`'s closing note and in the
+final chat summary delivered alongside this phase's completion — a small
+number of DoD items are met with a documented, explained deviation (the
+GCC-only build convention adopted mid-project, per user direction, in
+place of "build with GCC and Clang"; and the two REQ-ARCH-009 socket-path
+literals in `ecu/<Ecu>/main.c`'s argument defaults) rather than a literal
+word-for-word match, and are called out explicitly rather than silently
+marked done.
