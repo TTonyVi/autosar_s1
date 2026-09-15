@@ -13,6 +13,12 @@ Examples:
     python3 tools/hmi/hw_link.py --link /tmp/vhw_sensor.sock --speed 120.0 --ignition on
     python3 tools/hmi/hw_link.py --link /tmp/vhw_sensor.sock --raw "ADC0=4095;DIO0=1;SEQ=1"
 """
+# PEP 585 generics (list[str]) are written throughout because REQ-HMI-001
+# specifies Python 3.10 or newer. This import makes annotations lazy so the
+# same source also runs unchanged on the 3.8 interpreters still shipped by
+# Ubuntu 20.04, where evaluating those annotations at def time would raise.
+from __future__ import annotations
+
 import argparse
 import itertools
 import socket

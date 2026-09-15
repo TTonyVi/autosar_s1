@@ -77,7 +77,16 @@ static void PackBits(uint8 frame[COM_IPDU_LENGTH], uint8 bitPosition, uint8 bitL
         uint8 byteIndex = (uint8)(bitIndex / 8U);
         uint8 bitInByte = (uint8)(bitIndex % 8U);
         uint8 bitMask = (uint8)(1U << bitInByte);
-        if (((uint16)(value >> i) & 0x1U) != 0U) {
+        /* The shifted value is assigned to a named uint16 before the
+         * mask, rather than combined into one expression, so the `&`
+         * operates on two same-width operands with no promote-then-
+         * narrow step for the compiler to warn about. Empirically this
+         * form (unlike an inline cast immediately before `&`) stays
+         * -Wsign-conversion-clean under -fsanitize=undefined too, which
+         * changes GCC 9's warning behavior on the exact same expression
+         * (see docs/IMPLEMENTATION_STATUS.md, Phase 8). */
+        uint16 shifted = (uint16)(value >> i);
+        if ((shifted & (uint16)1U) != 0U) {
             frame[byteIndex] = (uint8)(frame[byteIndex] | bitMask);
         } else {
             frame[byteIndex] = (uint8)(frame[byteIndex] & (uint8)(~bitMask));
@@ -91,7 +100,11 @@ static uint16 UnpackBits(const uint8 frame[COM_IPDU_LENGTH], uint8 bitPosition, 
         uint8 bitIndex = (uint8)(bitPosition + i);
         uint8 byteIndex = (uint8)(bitIndex / 8U);
         uint8 bitInByte = (uint8)(bitIndex % 8U);
-        if (((uint8)(frame[byteIndex] >> bitInByte) & 0x1U) != 0U) {
+        /* See the matching comment in PackBits: a named same-width
+         * variable before the mask, not an inline cast, is what stays
+         * -Wsign-conversion-clean under -fsanitize=undefined too. */
+        uint8 shifted = (uint8)(frame[byteIndex] >> bitInByte);
+        if ((shifted & (uint8)1U) != 0U) {
             value = (uint16)(value | (uint16)(1U << i));
         }
     }

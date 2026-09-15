@@ -34,9 +34,10 @@ The implementation must stay small enough to understand end-to-end while remaini
 | Version | Change |
 |---|---|
 | v1.0 | Baseline: two ECUs, communication stack, scenario CSV read inside the ECU, Tkinter tool as an optional admin backdoor |
+| v1.2 | The OS time source is separated from `Gpt`. A dedicated MCAL driver `SysTimer` feeds an OS-owned counter layer `Os_Counter`; `Gpt` keeps its API but now serves only the other BSW modules (COM deadlines and Tx period, IoHwAb staleness, Dem/Det timestamps, Display write pacing, Logger timestamps). Reason: in real AUTOSAR the OS owns a dedicated hardware timer (SysTick, STM) and nothing else shares it, for safety, certification, and initialization-order reasons — a single shared `Gpt` misrepresented that and made the code misleading to read. Both drivers remain under `bsw/mcal/`, so `REQ-ARCH-009` is unchanged. |
 | v1.1 | Target fixed to Ubuntu. A real MCAL boundary is introduced (`Mcu`, `Port`, `Gpt`, `Adc`, `Dio`, `Can`, `Display`) plus an `IoHwAb` ECU Abstraction layer. Sensor values no longer originate inside the ECU: they enter as raw ADC counts and digital levels through a virtual hardware link, exactly as a physical sensor would. The Tkinter application is promoted from a debug backdoor to the specified virtual hardware rig and instrument display, and the CSV scenario moves out of the ECU into a headless player that drives the same link. |
 
-The intent of v1.1 is architectural fidelity: an ECU never invents its own input, and an application component never learns where its input came from.
+The intent of v1.1 is architectural fidelity: an ECU never invents its own input, and an application component never learns where its input came from. The intent of v1.2 is the same fidelity applied to time: the OS clock and the general-purpose clock are two separate, independently managed paths, exactly as on a real ECU.
 
 ---
 
@@ -243,9 +244,11 @@ The MCAL is the substitution boundary of the whole project. Every host-specific 
 | Adc (MCAL) | Conversion result of the wheel-speed channel as raw counts | Virtual hardware link and DET | Physical units, km/h, application meaning |
 | Dio (MCAL) | Level of the ignition channel | Virtual hardware link and DET | Physical units and application meaning |
 | Display (MCAL) | Byte-level output of one display frame | Virtual hardware link and DET | Why a state is shown, cluster logic |
-| Mcu, Port, Gpt (MCAL) | Startup, channel setup, hardware time base | Host clock and link creation | Anything above the MCAL boundary |
+| Mcu, Port, Gpt (MCAL) | Startup, channel setup, general-purpose time base for BSW modules | Host clock and link creation | Anything above the MCAL boundary, and the OS time base |
+| SysTimer (MCAL) | The dedicated OS system timer: free-running tick source owned solely by the OS | Host clock | Every module except `Os_Counter`; it never calls `Gpt` |
 | EcuM | Initialization/shutdown state machine | Init/deinit APIs in defined order | Application control algorithm |
-| Os | Periodic activation and priority order | Task entry functions | Signal encoding and CAN routing |
+| Os | Periodic activation and priority order | Task entry functions and `Os_Counter` | Signal encoding, CAN routing, and `Gpt` |
+| Os_Counter | OS counter over the OS tick source: zeroing, tick-to-millisecond conversion | `SysTimer` only | `Gpt`, the host clock API, and anything above the OS |
 | Det | Development error records | Logger backend | Recovery policy |
 | Dem | Diagnostic event state and occurrence counters | Logger backend | SocketCAN implementation details |
 
@@ -264,6 +267,7 @@ The MCAL is the substitution boundary of the whole project. Every host-specific 
 - `REQ-ARCH-011`: The Tkinter HMI SHALL run as a separate process, SHALL be written in Python using only the standard library, and SHALL NOT include, import, link, or generate ECU source. It communicates only through the virtual hardware links and an optional read-only `vcan0` socket.
 - `REQ-ARCH-012`: Replacing the Ubuntu MCAL with a microcontroller MCAL SHALL require no change in `asw/`, `rte/`, or any `bsw/` directory other than `bsw/mcal/`. A static check SHALL support this claim.
 - `REQ-ARCH-013`: No ECU source file SHALL contain the words `scenario`, `slider`, `gui`, or `hmi` in a functional role. The ECU does not know how its stimuli are produced.
+- `REQ-ARCH-014`: The OS time source SHALL be separate from the general-purpose timer. No file under `bsw/os/` SHALL contain `Gpt_`; `Os` SHALL take all time from `Os_Counter`, which SHALL read `SysTimer` and nothing else. A static check SHALL enforce this.
 
 ---
 
@@ -709,10 +713,28 @@ void Mcu_Init(const Mcu_ConfigType *config);
 Std_ReturnType Mcu_InitClock(Mcu_ClockType clock_setting);
 void Port_Init(const Port_ConfigType *config);
 void Gpt_Init(const Gpt_ConfigType *config);
+void Gpt_DeInit(void);
 Gpt_ValueType Gpt_GetTimeElapsed(Gpt_ChannelType channel);
 ```
 
-`Gpt` SHALL be the only owner of `clock_gettime`. `Os` and every timeout in the project SHALL derive time from `Gpt`, so that a microcontroller port changes the time base in exactly one file.
+#### System timer and OS counter
+
+```c
+void SysTimer_Init(const SysTimer_ConfigType *config);
+void SysTimer_DeInit(void);
+SysTimer_TickType SysTimer_GetTicks(void);
+
+void Os_Counter_Init(void);
+void Os_Counter_DeInit(void);
+Os_TickType Os_Counter_GetValue(void);
+Os_MilliType Os_Counter_TicksToMs(Os_TickType ticks);
+```
+
+`Gpt` and `SysTimer` SHALL be the only owners of `clock_gettime`, and both SHALL live under `bsw/mcal/`. They SHALL keep independent start timestamps and SHALL NOT call each other.
+
+`SysTimer` SHALL be read only by `Os_Counter`. `Os` and everything under `bsw/os/` SHALL take time from `Os_Counter` (`REQ-ARCH-014`).
+
+`Gpt` SHALL serve every other timing user in the project: COM deadline monitoring and Tx period, IoHwAb input staleness, Dem and Det timestamps, Display minimum write period, Logger line timestamps, and the `VirtualHw` link staleness those drivers depend on. A microcontroller port changes the time base in exactly two files, `Gpt.c` and `SysTimer.c`.
 
 #### Adc and Dio (input MCAL, `SensorEcu`)
 
@@ -774,7 +796,9 @@ Configuration tables SHALL be `const` and validated during initialization. Inval
 
 Each ECU SHALL be a single-threaded process with a cooperative cyclic executive. This is a simplified host realization of task/runnable mapping, not a full AUTOSAR OS.
 
-- Take all time from `Gpt`, which is the only module allowed to call `clock_gettime(CLOCK_MONOTONIC, ...)`.
+- The OS SHALL take all time from `Os_Counter`, which reads the dedicated `SysTimer` driver. The OS SHALL NOT read `Gpt`.
+- `Gpt` and `SysTimer` SHALL be the only modules allowed to call `clock_gettime(CLOCK_MONOTONIC, ...)`; every other timing user in the project takes its time from `Gpt`.
+- Rationale for the split: on a real ECU the OS is driven by a dedicated hardware timer (SysTick on Cortex-M, STM on AURIX) that no other module shares, so that application or BSW misuse of a general-purpose timer cannot disturb scheduling, and so the OS time base can be brought up before any module `Gpt` serves. On this host both drivers read `CLOCK_MONOTONIC`, but they are two independently initialized, independently zeroed counters.
 - Use absolute next-release timestamps to avoid cumulative drift.
 - The scheduler MAY sleep until the nearest deadline using `clock_nanosleep`.
 - When multiple tasks are due, execute higher priority first.
@@ -835,22 +859,24 @@ stateDiagram-v2
 1. Initialize the logger.
 2. `Mcu_Init`, then `Mcu_InitClock`.
 3. `Port_Init`.
-4. `Gpt_Init` and start the ECU time base.
-5. `Det_Init`.
-6. `Dem_Init`.
-7. Parse command-line configuration, the post-build-like values of section 11.1.
-8. Input and output MCAL drivers: `Adc_Init` and `Dio_Init` on `SensorEcu`, `Display_Init` on `ClusterEcu`.
-9. `Can_Init`.
-10. `IoHwAb_Init`.
-11. `CanIf_Init`.
-12. `PduR_Init`.
-13. `Com_Init`.
-14. `Rte_Start`.
-15. Set CAN controller to `CAN_CS_STARTED` through CanIf.
-16. Start the configured COM I-PDU group with initialization enabled.
-17. Start OS schedule and enter `ECUM_STATE_RUN`.
+4. `SysTimer_Init` and start the OS tick source.
+5. `Os_Counter_Init` and zero the OS counter against that tick source.
+6. `Gpt_Init` and start the general-purpose ECU time base.
+7. `Det_Init`.
+8. `Dem_Init`.
+9. Parse command-line configuration, the post-build-like values of section 11.1.
+10. Input and output MCAL drivers: `Adc_Init` and `Dio_Init` on `SensorEcu`, `Display_Init` on `ClusterEcu`.
+11. `Can_Init`.
+12. `IoHwAb_Init`.
+13. `CanIf_Init`.
+14. `PduR_Init`.
+15. `Com_Init`.
+16. `Rte_Start`.
+17. Set CAN controller to `CAN_CS_STARTED` through CanIf.
+18. Start the configured COM I-PDU group with initialization enabled.
+19. Start OS schedule and enter `ECUM_STATE_RUN`.
 
-The order is the AUTOSAR order and SHALL be justified in `docs/ARCHITECTURE.md`: microcontroller and clock first, then pin configuration, then diagnostics so that later failures are recordable, then drivers, then abstraction, then the communication stack bottom-up, then the RTE.
+The order is the AUTOSAR order and SHALL be justified in `docs/ARCHITECTURE.md`: microcontroller and clock first, then pin configuration, then the OS time base (`SysTimer` before `Os_Counter`, both before the general-purpose `Gpt`, because the OS must be able to keep time before any module `Gpt` serves exists), then diagnostics so that later failures are recordable, then drivers, then abstraction, then the communication stack bottom-up, then the RTE.
 
 ### 9.3 Shutdown order
 
@@ -862,7 +888,8 @@ The order is the AUTOSAR order and SHALL be justified in `docs/ARCHITECTURE.md`:
 6. `Can_DeInit`.
 7. `IoHwAb_DeInit`, then `Adc_DeInit` and `Dio_DeInit`, or `Display_DeInit` on the cluster; close and unlink the virtual hardware links.
 8. Print scheduler and diagnostic summary.
-9. Enter `ECUM_STATE_SHUTDOWN` and exit.
+9. `Gpt_DeInit`, then `Os_Counter_DeInit`, then `SysTimer_DeInit` — the reverse of steps 4 to 6 of the initialization order.
+10. Enter `ECUM_STATE_SHUTDOWN` and exit.
 
 Requirements:
 
@@ -953,6 +980,7 @@ At minimum, define typed configurations for:
 - `CanIf_RxPduConfigType`: CAN ID/mask, expected DLC, CanIf PDU ID, HRH
 - `Can_ControllerConfigType`: controller ID, interface name, nonblocking mode
 - `Os_TaskConfigType`: task name, period, priority, callback
+- `SysTimer_ConfigType`: channel ID, ticks per millisecond
 - `VirtualHw_LinkConfigType`: link ID, socket path, direction, maximum datagrams per activation, staleness timeout
 - `Adc_GroupConfigType`: group ID, channel, resolution in bits, link ID, plausibility minimum and maximum in counts
 - `Dio_ChannelConfigType`: channel ID, link ID, default level when no value has been received
@@ -1017,13 +1045,14 @@ autosar-speed-monitor/
 │   │   ├── Mcu/
 │   │   ├── Port/
 │   │   ├── Gpt/
+│   │   ├── SysTimer/
 │   │   ├── Adc/
 │   │   ├── Dio/
 │   │   ├── Display/
 │   │   ├── Can/
 │   │   └── VirtualHw/
 │   └── os/
-│       └── Os/
+│       └── Os/          # Os.c/.h + Os_Counter.c/.h
 ├── asw/
 │   ├── VehicleStateSwc/
 │   └── ClusterControlSwc/
@@ -1056,6 +1085,8 @@ autosar-speed-monitor/
     ├── default.csv
     └── timeout_recovery.csv
 ```
+
+`bsw/mcal/SysTimer/` is the OS's dedicated tick source and is read only by `bsw/os/Os/Os_Counter.c`; `bsw/mcal/Gpt/` serves every other timing user. The two never call each other (section 8.1, `REQ-ARCH-014`).
 
 `bsw/mcal/VirtualHw/` holds the shared non-blocking Unix datagram helper used by `Adc`, `Dio`, and `Display`. It is the single place where the project touches a host socket for I/O, and together with `bsw/mcal/Can/` it is the complete list of files a hardware port replaces.
 
@@ -1143,7 +1174,9 @@ Example:
 | `test_adc_dio` | raw count pass-through without scaling, staleness age reporting, unknown channel, default level before first datagram |
 | `test_iohwab` | conversion vectors at 0, 2048, 4095 counts, rounding, out-of-range counts, timeout invalidity, ignition mapping, display value assembly |
 | `test_display` | frame formatting, write failure counted and reported, minimum write period respected |
-| `test_scheduler` | due ordering including `Task_Io_5ms` before `Task_App_10ms`, missed periods, monotonic deadline advancement |
+| `test_scheduler` | due ordering including `Task_Io_5ms` before `Task_App_10ms`, missed periods, monotonic deadline advancement; driven by a fake `SysTimer`, never a fake `Gpt` |
+| `test_systimer` | read before init rejected, ticks monotonic, ticks advance with real time, null/inconsistent config reported but time base still started, read after deinit rejected |
+| `test_os_counter` | counter zeroed at init against the current tick, follows the timer, tick-to-millisecond conversion, conversion monotonic, read before init rejected, correct across the 32-bit tick rollover |
 | `test_det_dem` | bounded counters/ring buffer, event failed/passed transitions |
 | `test_config` | valid configuration accepted; duplicate/overlap/missing route rejected |
 
@@ -1204,7 +1237,8 @@ Enable test counters in each module and assert one end-to-end exchange increment
 - Run `clang-format --dry-run --Werror`.
 - Run sanitizer integration test.
 - Use an include/dependency check to prove SW-C code does not include forbidden BSW/Ubuntu headers, including `IoHwAb.h`, `Adc.h`, `Dio.h`, and `Display.h`.
-- Prove `REQ-ARCH-009` mechanically: no file outside `bsw/mcal/` may contain `sys/socket.h`, `sys/un.h`, `linux/can.h`, `AF_UNIX`, `clock_gettime`, or a `/tmp/` path literal.
+- Prove `REQ-ARCH-009` mechanically: no file outside `bsw/mcal/` may contain `sys/socket.h`, `sys/un.h`, `linux/can.h`, `AF_UNIX`, `clock_gettime`, or a `/tmp/` path literal. The socket-path clause exempts `ecu/<Ecu>/main.c`, and only that file: section 15.4 requires `--sensor-link`/`--display-link` to HAVE defaults, and an argument default has to be written where the arguments are parsed. The rule's intent is unaffected — the literal there is a string handed down into MCAL configuration, and no module above `bsw/mcal/` opens, reads, or writes a link.
+- Prove `REQ-ARCH-014` mechanically: no file under `bsw/os/` may contain the string `Gpt_`.
 - Prove `REQ-ARCH-012` by building both ECUs against a stub MCAL that replaces the links with in-memory buffers, with no change outside `bsw/mcal/`.
 - Search for `malloc`, `calloc`, `realloc`, and `free`; only initialization-time scenario parsing may use them if unavoidable, and preferred implementation uses fixed buffers.
 

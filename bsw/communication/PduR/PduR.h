@@ -50,4 +50,10 @@ void PduR_CanIfRxIndication(PduIdType id, const PduInfoType *info);
  * route), then calls `Com_TxConfirmation` with the resolved COM-side id. */
 void PduR_CanIfTxConfirmation(PduIdType id);
 
+/* --- observability for tests and the status log; never read by PduR's
+ *     own logic (section 14.2 IT-04: "Counters are test instrumentation,
+ *     not an alternate data path"). --- */
+uint32 PduR_GetComTransmitForwardCount(void);
+uint32 PduR_GetCanIfRxIndicationForwardCount(void);
+
 #endif /* PDUR_H */

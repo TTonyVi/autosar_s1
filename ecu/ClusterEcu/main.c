@@ -2,18 +2,149 @@
  * @file main.c
  * @brief ClusterEcu process entry point.
  *
- * Phase 0 placeholder: prints identity/version and exits successfully.
- * Command-line parsing, EcuM initialization order, and the real scheduler
- * loop are introduced starting in later phases (see
- * AUTOSAR_CLASSIC_PROJECT_SPEC_v1.1.md, sections 9 and 15.4).
+ * AUTOSAR_CLASSIC_PROJECT_SPEC_v1.1.md, sections 8.1, 9 and 15.4.
+ *
+ * This file owns exactly three things a module may not: the command line,
+ * the signal handlers, and the outer real-time loop. Everything else is
+ * EcuM's (section 9.2). Note that it reads time through `Gpt`'s driver API
+ * for the optional `--duration` stop; it never calls the host clock
+ * directly, so `REQ-ARCH-009` is unaffected.
  */
+
+/* sigaction and nanosleep are POSIX.1; the project builds -std=c11 with
+ * extensions disabled, so they must be requested explicitly. */
+#define _POSIX_C_SOURCE 200809L
+
+#include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
-#include "Platform_Types.h"
+#include "ClusterEcu_Cfg.h"
+#include "EcuM.h"
+#include "Gpt.h"
+#include "Logger.h"
 
-#define CLUSTER_ECU_VERSION_STRING "0.0.0-phase0"
+#define EXIT_USAGE 2
+#define EXIT_STARTUP_FAILED 3
 
-int main(void) {
-    (void)printf("ClusterEcu placeholder build, version %s\n", CLUSTER_ECU_VERSION_STRING);
+#define DEFAULT_CAN_INTERFACE "vcan0"
+#define DEFAULT_DISPLAY_LINK "/tmp/vhw_cluster_display.sock"
+
+/* REQ-ECUM-003: the handler only sets this atomic flag. All shutdown work
+ * happens in normal process context, in the loop below. */
+static volatile sig_atomic_t g_stopRequested;
+
+static void HandleStopSignal(int signalNumber) {
+    (void)signalNumber;
+    g_stopRequested = 1;
+}
+
+static void InstallSignalHandlers(void) {
+    struct sigaction action;
+    (void)memset(&action, 0, sizeof(action));
+    action.sa_handler = HandleStopSignal;
+    (void)sigemptyset(&action.sa_mask);
+    (void)sigaction(SIGINT, &action, NULL);
+    (void)sigaction(SIGTERM, &action, NULL);
+}
+
+static void PrintUsage(const char *program) {
+    (void)printf("Usage: %s [options]\n"
+                 "  --can-if <name>        SocketCAN interface (default %s)\n"
+                 "  --display-link <path>   virtual display line, empty string disables the panel "
+                 "(default %s)\n"
+                 "  --duration <seconds>   stop automatically; 0 means run until a signal\n"
+                 "  --log-level <error|warn|info|debug>\n"
+                 "  --help\n",
+                 program, DEFAULT_CAN_INTERFACE, DEFAULT_DISPLAY_LINK);
+}
+
+/** Returns 0 on success, EXIT_USAGE on a bad argument, -1 when --help. */
+static int ParseArguments(int argc, char **argv, EcuM_PostBuildType *out) {
+    out->canInterface = DEFAULT_CAN_INTERFACE;
+    out->hwLinkPath = DEFAULT_DISPLAY_LINK;
+    out->hwLinkEnabled = TRUE;
+    out->logLevel = LOGGER_LEVEL_INFO;
+    out->durationSeconds = 0U;
+
+    for (int i = 1; i < argc; i++) {
+        boolean hasValue = ((i + 1) < argc) ? TRUE : FALSE;
+        if (strcmp(argv[i], "--help") == 0) {
+            PrintUsage(argv[0]);
+            return -1;
+        } else if ((strcmp(argv[i], "--can-if") == 0) && hasValue) {
+            out->canInterface = argv[++i];
+        } else if ((strcmp(argv[i], "--display-link") == 0) && hasValue) {
+            out->hwLinkPath = argv[++i];
+            /* Section 15.4: an empty string disables the display driver and
+             * the ECU logs only. */
+            out->hwLinkEnabled = (out->hwLinkPath[0] != '\0') ? TRUE : FALSE;
+        } else if ((strcmp(argv[i], "--duration") == 0) && hasValue) {
+            out->durationSeconds = (uint32)strtoul(argv[++i], NULL, 10);
+        } else if ((strcmp(argv[i], "--log-level") == 0) && hasValue) {
+            if (Logger_ParseLevel(argv[++i], &out->logLevel) != E_OK) {
+                (void)fprintf(stderr, "unknown log level: %s\n", argv[i]);
+                return EXIT_USAGE;
+            }
+        } else {
+            (void)fprintf(stderr, "unknown or incomplete option: %s\n", argv[i]);
+            PrintUsage(argv[0]);
+            return EXIT_USAGE;
+        }
+    }
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    EcuM_PostBuildType postBuild;
+    int parseResult = ParseArguments(argc, argv, &postBuild);
+    if (parseResult == -1) {
+        return 0;
+    }
+    if (parseResult != 0) {
+        return parseResult;
+    }
+
+    InstallSignalHandlers();
+
+    const EcuM_ConfigType *config = ClusterEcu_BuildConfig(&postBuild);
+    if (config == NULL) {
+        (void)fprintf(stderr, "ClusterEcu: configuration could not be assembled\n");
+        return EXIT_STARTUP_FAILED;
+    }
+
+    /* REQ-ECUM-001: a CAN interface that cannot be opened is fatal. */
+    if (EcuM_Init(config) != E_OK) {
+        (void)fprintf(stderr, "ClusterEcu: startup failed\n");
+        EcuM_Shutdown();
+        return EXIT_STARTUP_FAILED;
+    }
+
+    /* Section 8.1: the outer loop calls one scheduling pass and may sleep
+     * between passes. The sleep is a QUARTER of the shortest task period,
+     * not the period itself: nanosleep always overshoots its request, so
+     * sleeping a full millisecond makes the 1 ms task miss a release on
+     * most iterations and fills the Det log with scheduler overruns. A
+     * shorter poll costs CPU and buys deterministic release detection. */
+    const struct timespec tick = {.tv_sec = 0, .tv_nsec = 250000L};
+    const Gpt_ValueType durationMs = postBuild.durationSeconds * 1000U;
+
+    while (g_stopRequested == 0) {
+        EcuM_MainFunction();
+
+        if ((durationMs != 0U) && (Gpt_GetTimeElapsed(GPT_CHANNEL_TIME_BASE) >= durationMs)) {
+            Logger_Log(LOGGER_LEVEL_INFO, "ClusterEcu", "--duration reached, stopping");
+            break;
+        }
+        (void)nanosleep(&tick, NULL);
+    }
+
+    if (g_stopRequested != 0) {
+        Logger_Log(LOGGER_LEVEL_INFO, "ClusterEcu", "stop signal received");
+    }
+    EcuM_RequestShutdown();
+    EcuM_Shutdown();
     return 0;
 }

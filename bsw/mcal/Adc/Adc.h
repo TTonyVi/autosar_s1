@@ -64,4 +64,9 @@ void Adc_MainFunction_Read(void);
  */
 Gpt_ValueType Adc_GetGroupAge(Adc_GroupType group);
 
+/* Observability for tests and the status log; never read by Adc's own
+ * logic (section 14.2 IT-04: "Counters are test instrumentation, not an
+ * alternate data path"). */
+uint32 Adc_GetGroupReadCount(Adc_GroupType group);
+
 #endif /* ADC_H */

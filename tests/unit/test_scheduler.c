@@ -5,16 +5,18 @@
  * Covers the mandatory coverage from AUTOSAR_CLASSIC_PROJECT_SPEC_v1.1.md
  * section 14.1 ("test_scheduler"): due ordering including Task_Io_5ms
  * before Task_App_10ms, missed periods, and monotonic deadline
- * advancement. Uses the fake Gpt (tests/fixtures) instead of the real
- * host-clock-based one, so the whole test runs in simulated time and is
- * fully deterministic regardless of host speed.
+ * advancement. Uses the fake SysTimer (tests/fixtures) instead of the
+ * real host-clock-based one, so the whole test runs in simulated time and
+ * is fully deterministic regardless of host speed. The scheduler reads
+ * time through Os_Counter, never through Gpt (spec section 8.1).
  */
 #include <stdio.h>
 
 #include "Det.h"
-#include "Gpt_Fake.h"
 #include "Os.h"
+#include "Os_Counter.h"
 #include "Platform_Types.h"
+#include "SysTimer_Fake.h"
 
 /* Mirrors the real task table from spec section 8.2 (minus the actual BSW
  * callbacks, which are wired starting Phase 3+); indices below identify
@@ -80,8 +82,9 @@ static sint32 FindInLog(uint32 from, uint8 taskIndex) {
 }
 
 static void ResetSystem(void) {
-    GptFake_Reset();
-    Gpt_Init(NULL);
+    SysTimerFake_Reset();
+    SysTimer_Init(&SysTimer_Config);
+    Os_Counter_Init();
     Det_Init();
     g_logCount = 0U;
 
@@ -97,7 +100,7 @@ static void TestDueOrdering(void) {
      * Task_Io_5ms (period 5, priority 3) and Task_App_10ms (period 10,
      * priority 2) become due in the very same MainFunction call. */
     for (uint32 t = 1U; t <= 20U; t++) {
-        GptFake_SetTimeMs(t);
+        SysTimerFake_SetTicks(t);
         Os_MainFunction();
     }
 
@@ -120,7 +123,7 @@ static void TestMissedPeriods(void) {
      * release at 100ms) has releases due at 100,200,300,400,500 by the
      * time we finally check — one execution now, four recorded as
      * missed. */
-    GptFake_SetTimeMs(500U);
+    SysTimerFake_SetTicks(500U);
     Os_MainFunction();
 
     Os_TaskStatsType stats;
@@ -139,7 +142,7 @@ static void TestMonotonicDeadlineAdvancement(void) {
 
     Os_TaskStatsType stats;
 
-    GptFake_SetTimeMs(1U);
+    SysTimerFake_SetTicks(1U);
     Os_MainFunction();
     (void)Os_GetTaskStats(TASK_IDX_BSW_1MS, &stats);
     Check(stats.nextReleaseMs == 2U,
@@ -147,7 +150,7 @@ static void TestMonotonicDeadlineAdvancement(void) {
 
     /* The release schedule advances by fixed absolute steps, never by
      * "now + period" (which would drift under variable call timing). */
-    GptFake_SetTimeMs(2U);
+    SysTimerFake_SetTicks(2U);
     Os_MainFunction();
     (void)Os_GetTaskStats(TASK_IDX_BSW_1MS, &stats);
     Check(stats.nextReleaseMs == 3U,
@@ -155,8 +158,9 @@ static void TestMonotonicDeadlineAdvancement(void) {
 }
 
 static void TestInvalidConfigRejected(void) {
-    GptFake_Reset();
-    Gpt_Init(NULL);
+    SysTimerFake_Reset();
+    SysTimer_Init(&SysTimer_Config);
+    Os_Counter_Init();
     Det_Init();
 
     uint32 detBefore;
