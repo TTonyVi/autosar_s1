@@ -9,6 +9,8 @@
 #define COMPROTECTION_CRC_INIT ((uint8)0xFFU)
 #define COMPROTECTION_CRC_XOROUT ((uint8)0xFFU)
 
+/* Vai trò: nạp thêm 1 byte vào giá trị CRC đang tính (thuật toán
+ * CRC-8/AUTOSAR: poly 0x1D, MSB-first, không reflect). */
 static uint8 Crc8UpdateByte(uint8 crc, uint8 dataByte) {
     crc = (uint8)(crc ^ dataByte);
     for (uint8 bit = 0U; bit < 8U; bit++) {
@@ -21,6 +23,10 @@ static uint8 Crc8UpdateByte(uint8 crc, uint8 dataByte) {
     return crc;
 }
 
+/* Vai trò: tính CRC8 bảo vệ 1 I-PDU — input là ProtectionDataId (2 byte,
+ * high trước low) + toàn bộ payload với byte CRC tạm set về 0, theo đúng
+ * công thức section 6.5. Dùng chung cho cả lúc GỬI (tính CRC để nhét vào
+ * frame) và lúc NHẬN (tính lại để so sánh, phát hiện sai lệch). */
 uint8 ComProtection_ComputeCrc8(uint16 protectionDataId,
                                 const uint8 payload[COMPROTECTION_PAYLOAD_LENGTH],
                                 uint8 crcByteIndex) {
@@ -40,6 +46,10 @@ uint8 ComProtection_ComputeCrc8(uint16 protectionDataId,
     return (uint8)(crc ^ COMPROTECTION_CRC_XOROUT);
 }
 
+/* Vai trò: kiểm tra alive counter nhận được có đúng "counter cũ + 1 (mod
+ * 16)" không — chống replay/mất frame/lặp frame (section 6.5). Nếu đây là
+ * lần nhận đầu tiên (hasLast = FALSE) thì luôn chấp nhận, dùng để khởi
+ * tạo trạng thái. */
 boolean ComProtection_IsCounterValid(boolean hasLast, uint8 lastCounter, uint8 receivedCounter) {
     if (!hasLast) {
         return TRUE;

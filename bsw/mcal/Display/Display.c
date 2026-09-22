@@ -19,6 +19,8 @@ static uint32 g_writeSuccessCount;
 static uint32 g_writeFailureCount;
 static uint32 g_writeThrottledCount;
 
+/* Vai trò: nạp config (link id, độ dài frame tối đa, chu kỳ ghi tối
+ * thiểu), reset toàn bộ counter, bật cờ đã init. */
 void Display_Init(const Display_ConfigType *config) {
     if (config == NULL) {
         (void)Det_ReportError(DET_MODULE_ID_DISPLAY, 0U, DISPLAY_API_ID_INIT, DET_ERR_NULL_POINTER);
@@ -39,10 +41,16 @@ void Display_Init(const Display_ConfigType *config) {
     g_initialized = TRUE;
 }
 
+/* Vai trò: tắt module (chỉ hạ cờ init). */
 void Display_DeInit(void) {
     g_initialized = FALSE;
 }
 
+/* Vai trò: ghi 1 frame hiển thị ra display virtual hw link — có throttle
+ * theo chu kỳ tối thiểu (ghi quá nhanh thì bỏ qua, đếm lại), gửi qua
+ * VirtualHw_Send. Không nhận được ai lắng nghe (HMI đóng) vẫn coi là bình
+ * thường, không phải lỗi ECU (REQ-VHW-005, UC-11) — chỉ đếm lại để quan
+ * sát. */
 Std_ReturnType Display_Write(const Display_FrameType *frame) {
     if (frame == NULL) {
         (void)Det_ReportError(DET_MODULE_ID_DISPLAY, 0U, DISPLAY_API_ID_WRITE,
@@ -79,6 +87,9 @@ Std_ReturnType Display_Write(const Display_FrameType *frame) {
     return result;
 }
 
+/* Vai trò: hook chu kỳ dự phòng — module này ghi đồng bộ ngay trong
+ * Display_Write nên hàm này chỉ kiểm tra đã init chưa, không làm gì
+ * thêm. */
 void Display_MainFunction(void) {
     if (!g_initialized) {
         (void)Det_ReportError(DET_MODULE_ID_DISPLAY, 0U, DISPLAY_API_ID_MAIN_FUNCTION,
@@ -86,14 +97,19 @@ void Display_MainFunction(void) {
     }
 }
 
+/* Vai trò: getter — số lần Display_Write gửi thành công. */
 uint32 Display_GetWriteSuccessCount(void) {
     return g_writeSuccessCount;
 }
 
+/* Vai trò: getter — số lần Display_Write gửi thất bại (vd không ai lắng
+ * nghe ở đầu kia). */
 uint32 Display_GetWriteFailureCount(void) {
     return g_writeFailureCount;
 }
 
+/* Vai trò: getter — số lần Display_Write bị chặn vì ghi quá nhanh (chưa
+ * đủ chu kỳ tối thiểu). */
 uint32 Display_GetWriteThrottledCount(void) {
     return g_writeThrottledCount;
 }

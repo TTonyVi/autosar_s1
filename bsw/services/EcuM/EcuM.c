@@ -24,6 +24,14 @@ static volatile boolean g_shutdownRequested;
 #define LOG_WARN(...) Logger_Log(LOGGER_LEVEL_WARN, "EcuM", __VA_ARGS__)
 #define LOG_ERROR(...) Logger_Log(LOGGER_LEVEL_ERROR, "EcuM", __VA_ARGS__)
 
+/* Vai trò: NHẠC TRƯỞNG của toàn bộ quá trình khởi động — gọi Init của
+ * TẤT CẢ module khác theo đúng 19 bước cố định (section 9.2): Logger →
+ * Mcu/clock → Port → SysTimer/Os_Counter → Gpt → Det/Dem → driver I/O →
+ * Can (lỗi mở Can là fatal, khác VirtualHw) → IoHwAb → CanIf/PduR/Com →
+ * Rte_Start → bật controller → bật I-PDU group → cuối cùng mới Os_Init
+ * (không được kích hoạt task nào trước khi mọi thứ nó gọi tới đã sẵn
+ * sàng). Bất kỳ bước nào lỗi nghiêm trọng thì dừng ngay, chuyển sang
+ * SHUTDOWN, trả E_NOT_OK — không cố gắng "chạy tiếp cho được". */
 Std_ReturnType EcuM_Init(const EcuM_ConfigType *config) {
     g_shutdownRequested = FALSE;
     g_config = NULL;
@@ -141,6 +149,9 @@ Std_ReturnType EcuM_Init(const EcuM_ConfigType *config) {
     return E_OK;
 }
 
+/* Vai trò: hàm chạy theo chu kỳ của EcuM — chỉ đơn giản gọi
+ * Os_MainFunction() (tick scheduler) khi đang ở RUN; nếu chưa/không còn
+ * ở RUN thì từ chối, không cho task nào chạy. */
 void EcuM_MainFunction(void) {
     if (g_state != ECUM_STATE_RUN) {
         (void)Det_ReportError(DET_MODULE_ID_ECUM, 0U, ECUM_API_ID_MAIN_FUNCTION, DET_ERR_UNINIT);
@@ -149,20 +160,33 @@ void EcuM_MainFunction(void) {
     Os_MainFunction();
 }
 
+/* Vai trò: chỉ đặt 1 cờ boolean (REQ-ECUM-003) — an toàn để gọi từ signal
+ * handler (Ctrl+C), không I/O, không cấp phát bộ nhớ. Vòng lặp main() sẽ
+ * tự kiểm tra cờ này ở nhịp tiếp theo rồi gọi EcuM_Shutdown thật sự. */
 void EcuM_RequestShutdown(void) {
     /* REQ-ECUM-003: only sets a flag. No I/O, no allocation, nothing that
      * would be unsafe to do from a signal handler. */
     g_shutdownRequested = TRUE;
 }
 
+/* Vai trò: getter — cờ shutdown đã được yêu cầu chưa. */
 boolean EcuM_ShutdownRequested(void) {
     return g_shutdownRequested;
 }
 
+/* Vai trò: getter — trạng thái hiện tại của ECU (OFF/STARTUP/RUN/
+ * POST_RUN/SHUTDOWN). */
 EcuM_StateType EcuM_GetState(void) {
     return g_state;
 }
 
+/* Vai trò: NHẠC TRƯỞNG của quá trình tắt máy — thực hiện ĐÚNG THỨ TỰ
+ * NGƯỢC LẠI với EcuM_Init (section 9.3): dừng nhận task mới → dừng COM
+ * group/controller → Rte_Stop → dừng comm stack từ trên xuống → dừng
+ * abstraction/driver I/O → in báo cáo tổng kết scheduler + DET trong khi
+ * các module đó vẫn còn sống (bước 8) → cuối cùng mới tắt Os/Gpt/
+ * Os_Counter/SysTimer/Logger. Gọi lại nhiều lần hoặc khi đã OFF đều an
+ * toàn, không crash (REQ-ECUM-004). */
 void EcuM_Shutdown(void) {
     if ((g_state == ECUM_STATE_SHUTDOWN) || (g_state == ECUM_STATE_OFF)) {
         /* REQ-ECUM-004: repeated deinit SHALL not crash. */

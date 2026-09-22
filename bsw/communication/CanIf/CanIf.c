@@ -42,6 +42,9 @@ typedef struct {
 
 static CanIf_StateType g_state;
 
+/* Vai trò: nạp bảng Tx/Rx PDU tĩnh (ánh xạ PduId logic ↔ CAN ID vật lý +
+ * DLC), validate kỹ (DLC hợp lệ, không trùng CAN ID trong Rx table),
+ * all-or-nothing giống các Init khác trong project. */
 void CanIf_Init(const CanIf_ConfigType *config) {
     /* Set unconditionally before any validation, so a re-Init that fails
      * partway through can never leave a PREVIOUS successful init's
@@ -98,10 +101,14 @@ void CanIf_Init(const CanIf_ConfigType *config) {
     g_state.initialized = TRUE;
 }
 
+/* Vai trò: xoá sạch toàn bộ bảng route + counter + state. */
 void CanIf_DeInit(void) {
     (void)memset(&g_state, 0, sizeof(g_state));
 }
 
+/* Vai trò: chuyển tiếp yêu cầu đổi trạng thái controller xuống Can driver
+ * — CanIf là lớp trung gian duy nhất PduR/EcuM được phép gọi, không đụng
+ * thẳng vào Can (section 3.1). */
 Std_ReturnType CanIf_SetControllerMode(uint8 controller_id, Can_ControllerStateType mode) {
     if (!g_state.initialized) {
         (void)Det_ReportError(DET_MODULE_ID_CANIF, controller_id, CANIF_API_ID_SET_CONTROLLER_MODE,
@@ -111,6 +118,10 @@ Std_ReturnType CanIf_SetControllerMode(uint8 controller_id, Can_ControllerStateT
     return Can_SetControllerMode(controller_id, mode);
 }
 
+/* Vai trò: PduR gọi khi muốn gửi 1 PDU — tra bảng Tx theo id logic, kiểm
+ * tra độ dài khớp DLC cấu hình + controller đang STARTED, rồi dựng
+ * Can_PduType (gắn CAN ID vật lý thật) và gọi xuống Can_Write(). Đây là
+ * nơi PduId logic ↔ CAN ID vật lý được ánh xạ. */
 Std_ReturnType CanIf_Transmit(PduIdType tx_pdu_id, const PduInfoType *info) {
     if (!g_state.initialized) {
         (void)Det_ReportError(DET_MODULE_ID_CANIF, 0U, CANIF_API_ID_TRANSMIT, DET_ERR_UNINIT);
@@ -143,6 +154,12 @@ Std_ReturnType CanIf_Transmit(PduIdType tx_pdu_id, const PduInfoType *info) {
     return Can_Write(txPdu->hth, &pdu);
 }
 
+/* Vai trò: Can driver gọi khi có frame mới tới — tra bảng Rx theo cặp
+ * (CAN ID, controller id) để tìm đúng route, kiểm tra DLC khớp (sai thì
+ * loại NGUYÊN PDU trước khi đụng tới bất kỳ signal nào), rồi forward lên
+ * PduR_CanIfRxIndication với id logic. CAN ID lạ không khớp route nào
+ * (bus chia sẻ, có thể có node khác) thì chỉ đếm lại + báo Det, không
+ * coi là crash. */
 void CanIf_RxIndication(const Can_HwType *mailbox, const PduInfoType *info) {
     if (!g_state.initialized) {
         (void)Det_ReportError(DET_MODULE_ID_CANIF, 0U, CANIF_API_ID_RX_INDICATION, DET_ERR_UNINIT);
@@ -180,6 +197,8 @@ void CanIf_RxIndication(const Can_HwType *mailbox, const PduInfoType *info) {
                           DET_ERR_INVALID_PARAM);
 }
 
+/* Vai trò: Can driver gọi khi 1 frame đã gửi thành công — chuyển tiếp
+ * xác nhận lên PduR_CanIfTxConfirmation theo đúng id logic. */
 void CanIf_TxConfirmation(PduIdType tx_pdu_id) {
     if (!g_state.initialized) {
         (void)Det_ReportError(DET_MODULE_ID_CANIF, 0U, CANIF_API_ID_TX_CONFIRMATION,
@@ -195,18 +214,24 @@ void CanIf_TxConfirmation(PduIdType tx_pdu_id) {
     PduR_CanIfTxConfirmation(tx_pdu_id);
 }
 
+/* Vai trò: getter — số PDU nhận đã khớp route và được forward lên PduR. */
 uint32 CanIf_GetRxAcceptedCount(void) {
     return g_state.rxAcceptedCount;
 }
 
+/* Vai trò: getter — số PDU nhận bị loại (sai DLC hoặc không khớp route
+ * nào). */
 uint32 CanIf_GetRxRejectedCount(void) {
     return g_state.rxRejectedCount;
 }
 
+/* Vai trò: getter — số lần Tx đã được Can xác nhận gửi thành công. */
 uint32 CanIf_GetTxConfirmationCount(void) {
     return g_state.txConfirmationCount;
 }
 
+/* Vai trò: getter — id logic của PDU nhận gần nhất (phục vụ test/quan
+ * sát). */
 Std_ReturnType CanIf_GetLastRxPduId(PduIdType *out) {
     if ((out == NULL) || (!g_state.hasLastRxPduId)) {
         return E_NOT_OK;

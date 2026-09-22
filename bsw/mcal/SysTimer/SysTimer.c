@@ -30,6 +30,9 @@
 static boolean g_initialized = FALSE;
 static struct timespec g_startTime;
 
+/* Vai trò: tính hiệu 2 mốc timespec ra số "tick" (đơn vị riêng của
+ * SysTimer, quy đổi theo SYSTIMER_TICKS_PER_MS) — khác Gpt vì SysTimer mô
+ * phỏng 1 timer phần cứng độc lập, không dùng chung mốc thời gian. */
 static SysTimer_TickType TimespecDiffTicks(const struct timespec *later,
                                            const struct timespec *earlier) {
     int64_t secDiff = (int64_t)later->tv_sec - (int64_t)earlier->tv_sec;
@@ -42,6 +45,9 @@ static SysTimer_TickType TimespecDiffTicks(const struct timespec *later,
     return (SysTimer_TickType)((uint64_t)ms * (uint64_t)SYSTIMER_TICKS_PER_MS);
 }
 
+/* Vai trò: khởi động timer riêng của OS — lưu mốc "tick 0" bằng
+ * clock_gettime; đây là nguồn thời gian DUY NHẤT mà Os_Counter được đọc
+ * (REQ-ARCH-014 — tách biệt hẳn khỏi Gpt dùng cho mọi module khác). */
 void SysTimer_Init(const SysTimer_ConfigType *config) {
     if (config == NULL) {
         (void)Det_ReportError(DET_MODULE_ID_SYSTIMER, 0U, SYSTIMER_API_ID_INIT,
@@ -59,10 +65,13 @@ void SysTimer_Init(const SysTimer_ConfigType *config) {
     g_initialized = TRUE;
 }
 
+/* Vai trò: tắt module (chỉ hạ cờ init). */
 void SysTimer_DeInit(void) {
     g_initialized = FALSE;
 }
 
+/* Vai trò: đọc số tick đã trôi qua kể từ SysTimer_Init — hàm duy nhất mà
+ * Os_Counter được phép gọi để lấy thời gian. */
 SysTimer_TickType SysTimer_GetTicks(void) {
     if (!g_initialized) {
         (void)Det_ReportError(DET_MODULE_ID_SYSTIMER, 0U, SYSTIMER_API_ID_GET_TICKS,

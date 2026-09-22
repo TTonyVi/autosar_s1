@@ -11,6 +11,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Vai trò: parse text dạng "KEY1=v1;KEY2=v2;..." tìm đúng `key`, đọc giá
+ * trị số nguyên không dấu đứng sau dấu "=". Không có state, không đụng
+ * socket — logic thuần chuỗi, tách riêng khỏi VirtualHw.c để test có thể
+ * link bản thật này chung với 1 VirtualHw giả (fake). */
 Std_ReturnType VirtualHw_ParseUint(const char *payload, const char *key, uint32 *out) {
     if ((payload == NULL) || (key == NULL) || (out == NULL)) {
         return E_NOT_OK;

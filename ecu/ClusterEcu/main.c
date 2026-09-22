@@ -36,11 +36,14 @@
  * happens in normal process context, in the loop below. */
 static volatile sig_atomic_t g_stopRequested;
 
+/* Vai trò: giống HandleStopSignal của SensorEcu/main.c — chỉ đặt cờ,
+ * không làm gì khác trong ngữ cảnh signal (REQ-ECUM-003). */
 static void HandleStopSignal(int signalNumber) {
     (void)signalNumber;
     g_stopRequested = 1;
 }
 
+/* Vai trò: đăng ký handler cho SIGINT/SIGTERM. */
 static void InstallSignalHandlers(void) {
     struct sigaction action;
     (void)memset(&action, 0, sizeof(action));
@@ -50,6 +53,7 @@ static void InstallSignalHandlers(void) {
     (void)sigaction(SIGTERM, &action, NULL);
 }
 
+/* Vai trò: in hướng dẫn dòng lệnh ra stdout. */
 static void PrintUsage(const char *program) {
     (void)printf("Usage: %s [options]\n"
                  "  --can-if <name>        SocketCAN interface (default %s)\n"
@@ -61,7 +65,10 @@ static void PrintUsage(const char *program) {
                  program, DEFAULT_CAN_INTERFACE, DEFAULT_DISPLAY_LINK);
 }
 
-/** Returns 0 on success, EXIT_USAGE on a bad argument, -1 when --help. */
+/** Vai trò: parse tham số dòng lệnh thành EcuM_PostBuildType. Khác
+ * SensorEcu ở chỗ `--display-link` rỗng ("") thì TẮT LUÔN driver display
+ * (chỉ còn log, section 15.4) thay vì coi là lỗi.
+ * Returns 0 on success, EXIT_USAGE on a bad argument, -1 when --help. */
 static int ParseArguments(int argc, char **argv, EcuM_PostBuildType *out) {
     out->canInterface = DEFAULT_CAN_INTERFACE;
     out->hwLinkPath = DEFAULT_DISPLAY_LINK;
@@ -97,6 +104,11 @@ static int ParseArguments(int argc, char **argv, EcuM_PostBuildType *out) {
     return 0;
 }
 
+/* Vai trò: ĐIỂM VÀO của tiến trình ClusterEcu — giống hệt cấu trúc
+ * SensorEcu/main.c: parse tham số → đăng ký signal handler → build config
+ * → EcuM_Init (CAN mở lỗi là fatal) → vòng lặp chính gọi
+ * EcuM_MainFunction() + ngủ 250µs mỗi vòng → dừng khi có tín hiệu/hết
+ * --duration → EcuM_Shutdown(). */
 int main(int argc, char **argv) {
     EcuM_PostBuildType postBuild;
     int parseResult = ParseArguments(argc, argv, &postBuild);

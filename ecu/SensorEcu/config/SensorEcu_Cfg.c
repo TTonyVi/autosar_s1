@@ -155,28 +155,38 @@ static const Com_ConfigType g_comConfig = {
 
 /* ------------------------- Os: section 8.2 --------------------------- */
 
+/* Vai trò: thân task ưu tiên cao nhất, chu kỳ 1ms — chỉ đọc/ghi socket
+ * CAN (không bao giờ log ở đây, section 13.4). */
 static void Task_Bsw_1ms(void) {
     /* Section 13.4: the 1 ms task never logs normal activity. */
     Can_MainFunction_Read();
     Can_MainFunction_Write();
 }
 
+/* Vai trò: thân task chu kỳ 5ms — kéo Adc/Dio đọc virtual hw link rồi
+ * chạy IoHwAb_MainFunction (scale + đánh giá validity). */
 static void Task_Io_5ms(void) {
     Adc_MainFunction_Read();
     Dio_MainFunction_Read();
     IoHwAb_MainFunction();
 }
 
+/* Vai trò: thân task chu kỳ 10ms — chạy runnable ứng dụng qua RTE. */
 static void Task_App_10ms(void) {
     Rte_Task_10ms();
 }
 
+/* Vai trò: thân task chu kỳ 20ms — chạy Com Tx/Rx (đóng gói/gửi, kiểm tra
+ * timeout). */
 static void Task_BswCom_20ms(void) {
     Com_MainFunctionTx();
     Com_MainFunctionRx();
 }
 
-/** Section 15.8: both ECUs log DEM transitions. Only a change in a
+/** Vai trò: quét toàn bộ event Dem mỗi chu kỳ, chỉ in log khi trạng thái
+ * MỘT event nào đó VỪA THAY ĐỔI (không in lặp lại mỗi lần cùng trạng
+ * thái) — giữ khối lượng log ở mức chấp nhận được (section 15.8).
+ * Section 15.8: both ECUs log DEM transitions. Only a change in a
  *  qualified status emits a line, so the volume stays bounded. */
 static void LogDemTransitions(void) {
     /* Seeded to PASSED, which is exactly the state a freshly initialized
@@ -205,7 +215,12 @@ static void LogDemTransitions(void) {
     }
 }
 
-/** Bounded periodic status line (section 13.4): one line per second, not
+/** Vai trò: in 2 dòng log tổng kết mỗi giây (không phải mỗi lần chạy —
+ * tick counter chặn lại) — 1 dòng trạng thái chung, 1 dòng "[Layers]" liệt
+ * kê counter riêng của từng tầng (Rte/Com/PduR/CanIf/Adc/IoHwAb) để test
+ * IT-04 xác nhận dữ liệu thật sự đi qua từng lớp, không chỉ nhìn kết quả
+ * cuối. Chỉ phục vụ quan sát/test, không module nào đọc lại các số này.
+ * Bounded periodic status line (section 13.4): one line per second, not
  *  one per activation. */
 static void LogStatus(void) {
     static uint8 tick;
@@ -245,6 +260,8 @@ static void LogStatus(void) {
                (unsigned)IoHwAb_GetValidSampleCount(), (unsigned)Rte_GetRxUpdateCount());
 }
 
+/* Vai trò: thân task ưu tiên thấp nhất, chu kỳ 100ms — chạy runnable
+ * 100ms qua RTE, tổng hợp Dem, rồi in 2 dòng log định kỳ. */
 static void Task_App_100ms(void) {
     Rte_Task_100ms();
     Dem_MainFunction();
@@ -263,6 +280,11 @@ static const Os_ConfigType g_osConfig = {.tasks = g_osTasks, .numTasks = 5U};
 
 static EcuM_ConfigType g_ecuMConfig;
 
+/* Vai trò: LẮP RÁP toàn bộ EcuM_ConfigType cho SensorEcu — vá 2 giá trị
+ * "post-build" duy nhất (đường socket + tên interface CAN, đến từ dòng
+ * lệnh) vào các bảng const tĩnh đã khai báo sẵn ở trên, rồi trả về con
+ * trỏ cho main() đưa vào EcuM_Init. Đây là nơi DUY NHẤT trên ECU này biết
+ * cả đường dẫn socket lẫn CAN ID cùng lúc. */
 const EcuM_ConfigType *SensorEcu_BuildConfig(const EcuM_PostBuildType *postBuild) {
     if ((postBuild == NULL) || (postBuild->canInterface == NULL) ||
         (postBuild->hwLinkPath == NULL)) {

@@ -36,11 +36,16 @@
  * happens in normal process context, in the loop below. */
 static volatile sig_atomic_t g_stopRequested;
 
+/* Vai trò: signal handler cho SIGINT/SIGTERM — CHỈ đặt 1 cờ
+ * sig_atomic_t, không làm gì khác (an toàn để gọi từ ngữ cảnh signal,
+ * REQ-ECUM-003). Việc tắt máy thật sự xảy ra ở vòng lặp main() bên dưới. */
 static void HandleStopSignal(int signalNumber) {
     (void)signalNumber;
     g_stopRequested = 1;
 }
 
+/* Vai trò: đăng ký HandleStopSignal cho cả SIGINT (Ctrl+C) và SIGTERM
+ * (kill mặc định) — Ctrl+C và dừng có kiểm soát đều đi cùng 1 đường. */
 static void InstallSignalHandlers(void) {
     struct sigaction action;
     (void)memset(&action, 0, sizeof(action));
@@ -50,6 +55,7 @@ static void InstallSignalHandlers(void) {
     (void)sigaction(SIGTERM, &action, NULL);
 }
 
+/* Vai trò: in hướng dẫn dòng lệnh ra stdout. */
 static void PrintUsage(const char *program) {
     (void)printf("Usage: %s [options]\n"
                  "  --can-if <name>        SocketCAN interface (default %s)\n"
@@ -60,7 +66,10 @@ static void PrintUsage(const char *program) {
                  program, DEFAULT_CAN_INTERFACE, DEFAULT_SENSOR_LINK);
 }
 
-/** Returns 0 on success, EXIT_USAGE on a bad argument, -1 when --help. */
+/** Vai trò: parse tham số dòng lệnh (--can-if, --sensor-link, --duration,
+ * --log-level, --help) thành EcuM_PostBuildType — đây là "post-build
+ * configuration" mà EcuM_Init sẽ dùng.
+ * Returns 0 on success, EXIT_USAGE on a bad argument, -1 when --help. */
 static int ParseArguments(int argc, char **argv, EcuM_PostBuildType *out) {
     out->canInterface = DEFAULT_CAN_INTERFACE;
     out->hwLinkPath = DEFAULT_SENSOR_LINK;
@@ -93,6 +102,13 @@ static int ParseArguments(int argc, char **argv, EcuM_PostBuildType *out) {
     return 0;
 }
 
+/* Vai trò: ĐIỂM VÀO của cả tiến trình SensorEcu — parse tham số, đăng ký
+ * signal handler, build config, gọi EcuM_Init (nếu fail thì thoát với mã
+ * lỗi — CAN không mở được là fatal, REQ-ECUM-001), rồi chạy VÒNG LẶP
+ * CHÍNH: gọi EcuM_MainFunction() liên tục, ngủ 250µs giữa các lần (ngắn
+ * hơn hẳn chu kỳ task 1ms ngắn nhất — vì nanosleep() luôn ngủ lố hơn yêu
+ * cầu, ngủ đúng 1ms sẽ làm task 1ms trễ hạn liên tục), dừng khi nhận tín
+ * hiệu hoặc hết --duration, rồi gọi EcuM_Shutdown() để tắt sạch sẽ. */
 int main(int argc, char **argv) {
     EcuM_PostBuildType postBuild;
     int parseResult = ParseArguments(argc, argv, &postBuild);

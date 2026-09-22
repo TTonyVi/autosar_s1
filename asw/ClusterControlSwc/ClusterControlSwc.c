@@ -18,6 +18,8 @@ static DisplayedSpeedRawType g_displayedSpeedRaw;
 static ClusterStatusFlagsType g_flags;
 static uint8 g_consecutiveValid;
 
+/* Vai trò: khởi tạo state machine — bắt đầu ở COMM_FAULT (an toàn nhất
+ * khi chưa nhận được gì), cờ TIMEOUT bật sẵn. */
 void ClusterControlSwc_Init(void) {
     g_state = CLUSTER_STATE_COMM_FAULT;
     g_displayedSpeedRaw = 0U;
@@ -25,7 +27,13 @@ void ClusterControlSwc_Init(void) {
     g_consecutiveValid = 0U;
 }
 
-/** Runs the section 4.4 transitions for one cycle of valid remote data. */
+/** Vai trò: TRÁI TIM của state machine — đúng 4 trạng thái, đúng luật
+ * chuyển section 4.4: COMM_FAULT cần 3 lần nhận hợp lệ liên tiếp mới
+ * được thoát (REQ-ASW-004); OVERSPEED có hysteresis (ngưỡng vào cao hơn
+ * ngưỡng ra, REQ-ASW-003, chống nhấp nháy quanh biên); mọi trạng thái đều
+ * về OFF ngay khi tắt máy. Chỉ gọi khi dữ liệu nhận được ĐÃ hợp lệ — hàm
+ * gọi nó (ClusterControlSwc_10ms) xử lý riêng trường hợp mất kết nối.
+ * Runs the section 4.4 transitions for one cycle of valid remote data. */
 static void RunValidStateMachine(VehicleSpeedRawType speedRaw, IgnitionOnType ignitionOn) {
     switch (g_state) {
         case CLUSTER_STATE_COMM_FAULT:
@@ -77,6 +85,14 @@ static void RunValidStateMachine(VehicleSpeedRawType speedRaw, IgnitionOnType ig
     }
 }
 
+/* Vai trò: RUNNABLE chu kỳ 10ms — đọc VehicleSpeedRaw/IgnitionOn qua RTE;
+ * nếu giao tiếp KHÔNG hợp lệ (timeout/never-received/integrity) thì bắt
+ * buộc về COMM_FAULT NGAY LẬP TỨC (REQ-ASW-001: mất kết nối được ưu tiên
+ * cao hơn cả ignition/speed) và reset bộ đếm hồi phục; nếu hợp lệ thì
+ * tăng bộ đếm rồi chạy RunValidStateMachine, sau đó tính displayedSpeed
+ * (kẹp max, và ép về 0 khi OFF/COMM_FAULT — quyết định riêng của project,
+ * không hiển thị số mà state machine không đứng sau), set cờ trạng thái,
+ * cuối cùng ghi kết quả ra port cho RTE/Com gửi đi. */
 void ClusterControlSwc_10ms(void) {
     VehicleSpeedRawType speedRaw = 0U;
     IgnitionOnType ignitionOn = FALSE;
@@ -135,24 +151,33 @@ void ClusterControlSwc_10ms(void) {
     (void)Rte_Write_PpClusterStatus_StatusFlags(g_flags);
 }
 
+/* Vai trò: RUNNABLE chu kỳ 100ms — đẩy trạng thái hiện tại ra màn hình
+ * qua RTE. Kết quả trả về CỐ Ý bị bỏ qua: ghi màn hình thất bại KHÔNG
+ * được phép quay lại ảnh hưởng state machine (section 4.2.1) — tách biệt
+ * hoàn toàn "quyết định" khỏi "hiển thị quyết định đó". */
 void ClusterControlSwc_100ms(void) {
     /* The return value is deliberately discarded: a display write failure
      * SHALL NOT change the cluster state machine (section 4.2.1). */
     (void)Rte_Call_RpDisplay_SetClusterDisplay(g_state, g_displayedSpeedRaw, g_flags);
 }
 
+/* Vai trò: getter — trạng thái cluster hiện tại. */
 ClusterStateType ClusterControlSwc_GetState(void) {
     return g_state;
 }
 
+/* Vai trò: getter — tốc độ đang hiển thị. */
 DisplayedSpeedRawType ClusterControlSwc_GetDisplayedSpeedRaw(void) {
     return g_displayedSpeedRaw;
 }
 
+/* Vai trò: getter — cờ trạng thái hiện tại (OVERSPEED/TIMEOUT/INTEGRITY). */
 ClusterStatusFlagsType ClusterControlSwc_GetStatusFlags(void) {
     return g_flags;
 }
 
+/* Vai trò: getter — số lần nhận hợp lệ liên tiếp hiện tại (đang trên
+ * đường hồi phục từ COMM_FAULT). */
 uint8 ClusterControlSwc_GetConsecutiveValidCount(void) {
     return g_consecutiveValid;
 }

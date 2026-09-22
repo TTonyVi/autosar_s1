@@ -37,8 +37,10 @@ static boolean g_displayLinkReported;
 static const char *const kStateNames[4] = {"OFF", "NORMAL", "OVERSPEED", "COMM_FAULT"};
 
 /**
- * Applies the configured linear conversion with 32-bit intermediates and
- * clamps to the configured output window (section 4.1.2).
+ * Vai trò: quy đổi counts thô (vd ADC counts) sang đơn vị vật lý (vd
+ * km/h×100) bằng công thức tuyến tính cấu hình sẵn (nhân/chia + offset),
+ * rồi kẹp trong khoảng [outputMin, outputMax] — ĐÂY LÀ NƠI "diễn giải ý
+ * nghĩa" dữ liệu thô, việc mà Adc/Dio không được làm (section 4.1.2).
  */
 static uint32 ScaleAndClamp(const IoHwAb_SignalConfigType *cfg, uint32 rawCounts) {
     uint32 scaled = (rawCounts * cfg->scalingNumerator) / cfg->scalingDenominator;
@@ -59,6 +61,12 @@ static uint32 ScaleAndClamp(const IoHwAb_SignalConfigType *cfg, uint32 rawCounts
 }
 
 /**
+ * Vai trò: đọc 1 signal từ driver nguồn (Adc hoặc Dio), đánh giá "còn
+ * tươi không" (fresh) + "hợp lý không" (plausible, trong khoảng cấu
+ * hình), rồi scale ra giá trị vật lý — chỉ khi CẢ HAI điều kiện đều đạt
+ * mới đánh dấu VALID; ngược lại trả về 0 + INVALID (REQ-IOHWAB-001: không
+ * bao giờ trả 1 giá trị cũ mà lại gắn nhãn "hợp lệ").
+ *
  * Samples one signal's driver and produces value + validity.
  *
  * `freshOut` reports whether THIS signal had a fresh value; the caller
@@ -124,6 +132,8 @@ static void SampleSignal(const IoHwAb_SignalConfigType *cfg, IoHwAb_SampleType *
     }
 }
 
+/* Vai trò: nạp bảng cấu hình signal (mỗi signal biết nguồn Adc/Dio, công
+ * thức scale, khoảng plausibility, timeout), validate all-or-nothing. */
 void IoHwAb_Init(const IoHwAb_ConfigType *config) {
     g_initialized = FALSE;
     g_config = NULL;
@@ -175,11 +185,17 @@ void IoHwAb_Init(const IoHwAb_ConfigType *config) {
     g_initialized = TRUE;
 }
 
+/* Vai trò: tắt module (hạ cờ init, bỏ tham chiếu config). */
 void IoHwAb_DeInit(void) {
     g_initialized = FALSE;
     g_config = NULL;
 }
 
+/* Vai trò: hàm chạy theo chu kỳ — lấy mẫu TẤT CẢ signal đã cấu hình qua
+ * SampleSignal, tổng hợp thành verdict "cả sensor line có mất kết nối
+ * không" (1 tín hiệu cũ là cả line coi như mất — REQ-IOHWAB-004), và
+ * theo dõi display link mất bao lâu (chỉ báo mất sau khi ghi lỗi liên
+ * tục quá displayTimeoutMs, không phải 1 lần fail là báo ngay). */
 void IoHwAb_MainFunction(void) {
     if (!g_initialized) {
         (void)Det_ReportError(DET_MODULE_ID_IOHWAB, 0U, IOHWAB_API_ID_MAIN_FUNCTION,
@@ -218,6 +234,8 @@ void IoHwAb_MainFunction(void) {
     }
 }
 
+/* Vai trò: API cho RTE/SW-C đọc tốc độ xe đã scale — trả cả giá trị lẫn
+ * cờ validity, không tự ý quyết định thay SW-C nên làm gì khi invalid. */
 Std_ReturnType IoHwAb_GetVehicleSpeedRaw(VehicleSpeedRawType *speed_raw,
                                          IoHwAb_ValidityType *validity) {
     if ((speed_raw == NULL) || (validity == NULL)) {
@@ -238,6 +256,8 @@ Std_ReturnType IoHwAb_GetVehicleSpeedRaw(VehicleSpeedRawType *speed_raw,
     return E_OK;
 }
 
+/* Vai trò: API cho RTE/SW-C đọc trạng thái ignition — cùng mẫu với
+ * IoHwAb_GetVehicleSpeedRaw. */
 Std_ReturnType IoHwAb_GetIgnitionState(IgnitionOnType *ignition_on, IoHwAb_ValidityType *validity) {
     if ((ignition_on == NULL) || (validity == NULL)) {
         (void)Det_ReportError(DET_MODULE_ID_IOHWAB, 0U, IOHWAB_API_ID_GET_IGNITION,
@@ -257,6 +277,12 @@ Std_ReturnType IoHwAb_GetIgnitionState(IgnitionOnType *ignition_on, IoHwAb_Valid
     return E_OK;
 }
 
+/* Vai trò: API cho RTE/SW-C ghi trạng thái cluster ra màn hình — validate
+ * + tự clamp lại speed (không tin tưởng tuyệt đối SW-C — REQ-ASW-006),
+ * định dạng thành chuỗi text "STATE=...;SPEED=...;FLAGS=...;T=..." đúng
+ * khuôn section 15.5.2, rồi gọi Display_Write. Theo dõi luôn lần ghi
+ * thành công gần nhất để IoHwAb_MainFunction tính display link có mất
+ * hay không. */
 Std_ReturnType IoHwAb_SetClusterDisplay(const IoHwAb_ClusterDisplayType *value) {
     if (value == NULL) {
         (void)Det_ReportError(DET_MODULE_ID_IOHWAB, 0U, IOHWAB_API_ID_SET_DISPLAY,
@@ -320,14 +346,19 @@ Std_ReturnType IoHwAb_SetClusterDisplay(const IoHwAb_ClusterDisplayType *value) 
     return result;
 }
 
+/* Vai trò: getter — tổng số lần lấy mẫu bị đánh giá INVALID (cũ hoặc
+ * ngoài khoảng plausibility). */
 uint32 IoHwAb_GetInvalidSampleCount(void) {
     return g_invalidSampleCount;
 }
 
+/* Vai trò: getter — tổng số lần lấy mẫu VALID. */
 uint32 IoHwAb_GetValidSampleCount(void) {
     return g_validSampleCount;
 }
 
+/* Vai trò: getter — số lần ghi màn hình thất bại (không tính lần bị
+ * throttle). */
 uint32 IoHwAb_GetDisplayWriteFailureCount(void) {
     return g_displayWriteFailureCount;
 }

@@ -41,6 +41,8 @@ static uint32 g_validRxSnapshot;
 static uint32 g_rxUpdateCount;
 static uint32 g_txWriteCount;
 
+/* Vai trò: giống RemoteStatus của Rte_SensorEcu.c — dịch trạng thái nhận
+ * VehicleStatus thành 1 mã Rte_ReturnType. */
 static Rte_ReturnType RemoteStatus(void) {
     if (!g_everReceived) {
         return RTE_E_NEVER_RECEIVED;
@@ -60,6 +62,9 @@ static Rte_ReturnType RemoteStatus(void) {
     return RTE_E_OK;
 }
 
+/* Vai trò: giống UpdateReceptionHealth của Rte_SensorEcu.c — set
+ * DEM_EVENT_VEHICLE_STATUS_INTEGRITY/TIMEOUT mỗi chu kỳ dựa trên counter
+ * lỗi của Com. */
 static void UpdateReceptionHealth(void) {
     Com_IPduIdType ipdu = (Com_IPduIdType)RTE_IPDU_RX_VEHICLE_STATUS;
     uint32 integrityErrors = Com_GetIpduRxCrcErrorCount(ipdu) +
@@ -91,6 +96,7 @@ static void UpdateReceptionHealth(void) {
 
 /* ------------------------ receiver port ------------------------------ */
 
+/* Vai trò: SW-C gọi để "nhập" VehicleSpeedRaw qua port nhận. */
 Rte_ReturnType Rte_Read_RpVehicleState_VehicleSpeedRaw(VehicleSpeedRawType *value) {
     if (value == NULL) {
         (void)Det_ReportError(DET_MODULE_ID_RTE, 0U, RTE_API_ID_READ, DET_ERR_NULL_POINTER);
@@ -100,6 +106,7 @@ Rte_ReturnType Rte_Read_RpVehicleState_VehicleSpeedRaw(VehicleSpeedRawType *valu
     return RemoteStatus();
 }
 
+/* Vai trò: SW-C gọi để "nhập" IgnitionOn qua port nhận. */
 Rte_ReturnType Rte_Read_RpVehicleState_IgnitionOn(IgnitionOnType *value) {
     if (value == NULL) {
         (void)Det_ReportError(DET_MODULE_ID_RTE, 0U, RTE_API_ID_READ, DET_ERR_NULL_POINTER);
@@ -111,6 +118,7 @@ Rte_ReturnType Rte_Read_RpVehicleState_IgnitionOn(IgnitionOnType *value) {
 
 /* ------------------------- sender port ------------------------------- */
 
+/* Vai trò: SW-C gọi để "xuất" ClusterState qua port gửi. */
 Rte_ReturnType Rte_Write_PpClusterStatus_ClusterState(ClusterStateType value) {
     if (!g_started) {
         (void)Det_ReportError(DET_MODULE_ID_RTE, 0U, RTE_API_ID_WRITE, DET_ERR_UNINIT);
@@ -124,6 +132,7 @@ Rte_ReturnType Rte_Write_PpClusterStatus_ClusterState(ClusterStateType value) {
                : RTE_E_NOT_OK;
 }
 
+/* Vai trò: SW-C gọi để "xuất" DisplayedSpeedRaw qua port gửi. */
 Rte_ReturnType Rte_Write_PpClusterStatus_DisplayedSpeedRaw(DisplayedSpeedRawType value) {
     if (!g_started) {
         (void)Det_ReportError(DET_MODULE_ID_RTE, 0U, RTE_API_ID_WRITE, DET_ERR_UNINIT);
@@ -137,6 +146,7 @@ Rte_ReturnType Rte_Write_PpClusterStatus_DisplayedSpeedRaw(DisplayedSpeedRawType
                : RTE_E_NOT_OK;
 }
 
+/* Vai trò: SW-C gọi để "xuất" StatusFlags qua port gửi. */
 Rte_ReturnType Rte_Write_PpClusterStatus_StatusFlags(ClusterStatusFlagsType value) {
     if (!g_started) {
         (void)Det_ReportError(DET_MODULE_ID_RTE, 0U, RTE_API_ID_WRITE, DET_ERR_UNINIT);
@@ -152,6 +162,9 @@ Rte_ReturnType Rte_Write_PpClusterStatus_StatusFlags(ClusterStatusFlagsType valu
 
 /* ------------------------- client port ------------------------------- */
 
+/* Vai trò: adapter port client-server — SW-C gọi hàm này để ghi màn
+ * hình, RTE bên trong gọi IoHwAb_SetClusterDisplay (SW-C không tự tên
+ * IoHwAb). Lỗi ghi được báo lại nhưng KHÔNG BAO GIỜ fatal (REQ-VHW-005). */
 Rte_ReturnType Rte_Call_RpDisplay_SetClusterDisplay(ClusterStateType state,
                                                     DisplayedSpeedRawType displayed_speed_raw,
                                                     ClusterStatusFlagsType flags) {
@@ -172,6 +185,7 @@ Rte_ReturnType Rte_Call_RpDisplay_SetClusterDisplay(ClusterStateType state,
 
 /* --------------------- COM receive notifications --------------------- */
 
+/* Vai trò: callback Com gọi khi nhận được signal VehicleSpeedRaw mới. */
 void Rte_COMCbk_VehicleSpeedRaw(void) {
     uint16 value = 0U;
     if (Com_ReceiveSignal((Com_SignalIdType)RTE_SIGNAL_RX_VEHICLE_SPEED_RAW, &value) == E_OK) {
@@ -181,6 +195,7 @@ void Rte_COMCbk_VehicleSpeedRaw(void) {
     }
 }
 
+/* Vai trò: callback Com gọi khi nhận được signal IgnitionOn mới. */
 void Rte_COMCbk_IgnitionOn(void) {
     uint16 value = 0U;
     if (Com_ReceiveSignal((Com_SignalIdType)RTE_SIGNAL_RX_IGNITION_ON, &value) == E_OK) {
@@ -192,6 +207,8 @@ void Rte_COMCbk_IgnitionOn(void) {
 
 /* --------------------------- lifecycle ------------------------------- */
 
+/* Vai trò: EcuM gọi lúc khởi động — reset buffer, bật cờ started, gọi
+ * ClusterControlSwc_Init(). */
 Std_ReturnType Rte_Start(void) {
     g_txClusterState = CLUSTER_STATE_COMM_FAULT;
     g_txDisplayedSpeedRaw = 0U;
@@ -210,11 +227,14 @@ Std_ReturnType Rte_Start(void) {
     return E_OK;
 }
 
+/* Vai trò: EcuM gọi lúc shutdown — hạ cờ started. */
 Std_ReturnType Rte_Stop(void) {
     g_started = FALSE;
     return E_OK;
 }
 
+/* Vai trò: Os gọi mỗi 10ms — cập nhật sức khoẻ đường nhận rồi gọi
+ * runnable 10ms của SW-C (state machine). */
 void Rte_Task_10ms(void) {
     if (!g_started) {
         (void)Det_ReportError(DET_MODULE_ID_RTE, 0U, RTE_API_ID_TASK, DET_ERR_UNINIT);
@@ -224,6 +244,7 @@ void Rte_Task_10ms(void) {
     ClusterControlSwc_10ms();
 }
 
+/* Vai trò: Os gọi mỗi 100ms — gọi runnable 100ms của SW-C (ghi màn hình). */
 void Rte_Task_100ms(void) {
     if (!g_started) {
         (void)Det_ReportError(DET_MODULE_ID_RTE, 0U, RTE_API_ID_TASK, DET_ERR_UNINIT);
@@ -232,10 +253,12 @@ void Rte_Task_100ms(void) {
     ClusterControlSwc_100ms();
 }
 
+/* Vai trò: getter — số lần buffer nhận đã được callback COM cập nhật. */
 uint32 Rte_GetRxUpdateCount(void) {
     return g_rxUpdateCount;
 }
 
+/* Vai trò: getter — số lần SW-C đã ghi (Write) ra port gửi. */
 uint32 Rte_GetTxWriteCount(void) {
     return g_txWriteCount;
 }

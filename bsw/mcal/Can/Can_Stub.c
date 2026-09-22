@@ -65,11 +65,15 @@ typedef struct {
 static Can_ControllerStateEntryType g_controllers[CAN_MAX_CONTROLLERS];
 static boolean g_initialized;
 
+/* Vai trò: kiểm tra controller_id hợp lệ + đã init + đã configured. */
 static boolean ControllerIsValid(uint8 controller_id) {
     return g_initialized && (controller_id < CAN_MAX_CONTROLLERS) &&
            g_controllers[controller_id].configured;
 }
 
+/* Vai trò: giống Can_Init thật nhưng không mở socket — chỉ validate
+ * config rồi đánh dấu controller "configured" (không có phần cứng để mở
+ * nên luôn thành công nếu config hợp lệ). */
 void Can_Init(const Can_ConfigType *config) {
     g_initialized = FALSE;
     (void)memset(g_controllers, 0, sizeof(g_controllers));
@@ -104,11 +108,14 @@ void Can_Init(const Can_ConfigType *config) {
     g_initialized = TRUE;
 }
 
+/* Vai trò: reset toàn bộ state stub về ban đầu (xoá cả hàng đợi loopback). */
 void Can_DeInit(void) {
     g_initialized = FALSE;
     (void)memset(g_controllers, 0, sizeof(g_controllers));
 }
 
+/* Vai trò: đổi trạng thái controller (STOPPED/STARTED/SLEEP), giống hệt
+ * Can.c thật vì đây thuần là cờ phần mềm, không liên quan phần cứng. */
 Std_ReturnType Can_SetControllerMode(uint8 controller_id, Can_ControllerStateType mode) {
     if (!ControllerIsValid(controller_id)) {
         (void)Det_ReportError(DET_MODULE_ID_CAN, controller_id, CAN_API_ID_SET_CONTROLLER_MODE,
@@ -119,10 +126,13 @@ Std_ReturnType Can_SetControllerMode(uint8 controller_id, Can_ControllerStateTyp
     return E_OK;
 }
 
+/* Vai trò: getter trạng thái controller. */
 Can_ControllerStateType Can_GetControllerMode(uint8 controller_id) {
     return ControllerIsValid(controller_id) ? g_controllers[controller_id].state : CAN_CS_UNINIT;
 }
 
+/* Vai trò: "sẵn sàng" ở bản stub chỉ còn nghĩa "đã configured" — không có
+ * phần cứng thật để mở/fail. */
 boolean Can_IsControllerReady(uint8 controller_id) {
     /* No hardware to fail opening on this variant, so "ready" reduces to
      * "was configured" -- REQ-ECUM-001's failure path (a real interface
@@ -131,6 +141,10 @@ boolean Can_IsControllerReady(uint8 controller_id) {
     return ControllerIsValid(controller_id);
 }
 
+/* Vai trò: thay vì write() xuống socket, đẩy frame vào 1 hàng đợi vòng
+ * (ring buffer) trong bộ nhớ của controller — chỉ chính process này tự
+ * đọc lại qua Can_MainFunction_Read (loopback nội bộ, không phải IPC
+ * thật giữa 2 ECU). Hàng đợi đầy thì coi như lỗi Tx, không block. */
 Std_ReturnType Can_Write(Can_HwHandleType hth, const Can_PduType *pdu_info) {
     uint8 controllerId = (uint8)hth;
     if ((pdu_info == NULL) || (pdu_info->sdu == NULL)) {
@@ -169,6 +183,8 @@ Std_ReturnType Can_Write(Can_HwHandleType hth, const Can_PduType *pdu_info) {
     return E_OK;
 }
 
+/* Vai trò: rút frame ra khỏi hàng đợi loopback (thay vì đọc socket) và
+ * forward lên CanIf_RxIndication — logic lọc/đếm giống hệt Can.c thật. */
 void Can_MainFunction_Read(void) {
     if (!g_initialized) {
         (void)Det_ReportError(DET_MODULE_ID_CAN, 0U, CAN_API_ID_MAIN_FUNCTION_READ, DET_ERR_UNINIT);
@@ -219,18 +235,24 @@ void Can_MainFunction_Read(void) {
     }
 }
 
+/* Vai trò: dự phòng, không làm gì — giống Can.c thật. */
 void Can_MainFunction_Write(void) {
     /* Reserved, same as the real driver -- see Can.h. */
 }
 
+/* Vai trò: getter số frame đã rút khỏi hàng đợi loopback thành công. */
 uint32 Can_GetRxFrameCount(uint8 controller_id) {
     return ControllerIsValid(controller_id) ? g_controllers[controller_id].rxFrameCount : 0U;
 }
 
+/* Vai trò: getter số frame bị drop — ở bản stub luôn là 0 vì hàng đợi
+ * chỉ chứa frame hợp lệ do chính Can_Write tạo ra (không có input hỏng
+ * kiểu SocketCAN thật). */
 uint32 Can_GetRxDroppedCount(uint8 controller_id) {
     return ControllerIsValid(controller_id) ? g_controllers[controller_id].rxDroppedCount : 0U;
 }
 
+/* Vai trò: getter số lần Can_Write thất bại (hàng đợi đầy/tham số sai). */
 uint32 Can_GetTxFailureCount(uint8 controller_id) {
     return ControllerIsValid(controller_id) ? g_controllers[controller_id].txFailureCount : 0U;
 }
