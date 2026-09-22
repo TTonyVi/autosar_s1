@@ -68,6 +68,9 @@ typedef struct {
 
 static Can_ControllerStateEntryType g_controllers[CAN_MAX_CONTROLLERS];
 
+/* Vai trò: chuyển 1 file descriptor sang chế độ non-blocking (đọc/ghi
+ * không chờ), bắt buộc vì Can_MainFunction_Read chạy theo chu kỳ, không
+ * được phép block chờ dữ liệu. */
 static boolean SetNonBlocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0) {
@@ -76,6 +79,9 @@ static boolean SetNonBlocking(int fd) {
     return (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0) ? TRUE : FALSE;
 }
 
+/* Vai trò: mở 1 socket CAN thô (PF_CAN/SOCK_RAW), tra chỉ số interface
+ * theo tên ("vcan0"), bind socket vào đúng interface đó, rồi set
+ * non-blocking. Trả về fd hoặc -1 nếu bất kỳ bước nào lỗi. */
 static int OpenAndBindCanSocket(const char *interfaceName) {
     int fd = socket(PF_CAN, SOCK_RAW, CAN_RAW);
     if (fd < 0) {
@@ -106,6 +112,11 @@ static int OpenAndBindCanSocket(const char *interfaceName) {
     return fd;
 }
 
+/* Vai trò: khởi tạo tất cả controller CAN được liệt kê trong config —
+ * validate config, mở + bind socket thật cho từng controller. Mở socket
+ * lỗi không làm dừng cả hàm (ghi nhận qua Det, controller đó ở lại
+ * UNINIT); EcuM (Phase 6) là nơi quyết định lỗi này có chặn boot hay
+ * không. */
 void Can_Init(const Can_ConfigType *config) {
     if (config == NULL) {
         (void)Det_ReportError(DET_MODULE_ID_CAN, 0U, CAN_API_ID_INIT, DET_ERR_NULL_POINTER);
@@ -153,6 +164,8 @@ void Can_Init(const Can_ConfigType *config) {
     }
 }
 
+/* Vai trò: đóng hết socket đang mở của mọi controller và reset toàn bộ
+ * state về ban đầu (UNINIT, fd = -1). */
 void Can_DeInit(void) {
     for (uint8 i = 0U; i < CAN_MAX_CONTROLLERS; i++) {
         if (g_controllers[i].fd >= 0) {
@@ -166,6 +179,10 @@ void Can_DeInit(void) {
     }
 }
 
+/* Vai trò: đổi trạng thái vận hành của 1 controller (STOPPED/STARTED/
+ * SLEEP). Chỉ đổi cờ trạng thái trong phần mềm — không mở/đóng lại
+ * socket (socket đã mở sẵn từ lúc Init, nếu Init thất bại thì không thể
+ * "start" lại bằng cách gọi hàm này). */
 Std_ReturnType Can_SetControllerMode(uint8 controller_id, Can_ControllerStateType mode) {
     if ((controller_id >= CAN_MAX_CONTROLLERS) || (!g_controllers[controller_id].configured)) {
         (void)Det_ReportError(DET_MODULE_ID_CAN, controller_id, CAN_API_ID_SET_CONTROLLER_MODE,
@@ -189,6 +206,7 @@ Std_ReturnType Can_SetControllerMode(uint8 controller_id, Can_ControllerStateTyp
     return E_OK;
 }
 
+/* Vai trò: đọc trạng thái hiện tại của 1 controller (getter thuần). */
 Can_ControllerStateType Can_GetControllerMode(uint8 controller_id) {
     if (controller_id >= CAN_MAX_CONTROLLERS) {
         return CAN_CS_UNINIT;
@@ -196,6 +214,9 @@ Can_ControllerStateType Can_GetControllerMode(uint8 controller_id) {
     return g_controllers[controller_id].state;
 }
 
+/* Vai trò: cho biết controller đã được cấu hình VÀ mở socket thành công
+ * chưa — EcuM dùng hàm này lúc boot để quyết định có nên abort startup
+ * không (REQ-ECUM-001). */
 boolean Can_IsControllerReady(uint8 controller_id) {
     if (controller_id >= CAN_MAX_CONTROLLERS) {
         return FALSE;
@@ -205,6 +226,11 @@ boolean Can_IsControllerReady(uint8 controller_id) {
                : FALSE;
 }
 
+/* Vai trò: gửi 1 frame CAN thật xuống socket — validate tham số, dựng
+ * struct can_frame từ PduType, write() xuống kernel (non-blocking, có thể
+ * fail vì hàng đợi Tx đầy — không coi là lỗi nghiêm trọng, chỉ đếm lại).
+ * Gửi thành công thì gọi ngay CanIf_TxConfirmation (Tx ở project này là
+ * đồng bộ, không cần đợi ngắt phần cứng). */
 Std_ReturnType Can_Write(Can_HwHandleType hth, const Can_PduType *pdu_info) {
     if (hth >= (Can_HwHandleType)CAN_MAX_CONTROLLERS) {
         (void)Det_ReportError(DET_MODULE_ID_CAN, 0U, CAN_API_ID_WRITE, DET_ERR_INVALID_PARAM);
@@ -252,6 +278,12 @@ Std_ReturnType Can_Write(Can_HwHandleType hth, const Can_PduType *pdu_info) {
     return E_OK;
 }
 
+/* Vai trò: hàm chạy theo chu kỳ (Task_Bsw_1ms) — với mỗi controller, đọc
+ * dồn tối đa CAN_RX_PER_ACTIVATION frame từ socket (không block), lọc bỏ
+ * error/remote frame và frame quá dài, rồi forward từng frame hợp lệ lên
+ * CanIf_RxIndication(). Nếu controller chưa STARTED thì vẫn rút cạn
+ * socket (tránh đầy buffer kernel) nhưng không báo lên trên — giống
+ * hành vi 1 controller thật đang bus-off/stopped. */
 void Can_MainFunction_Read(void) {
     for (uint8 controllerId = 0U; controllerId < CAN_MAX_CONTROLLERS; controllerId++) {
         if ((!g_controllers[controllerId].configured) || (g_controllers[controllerId].fd < 0)) {
@@ -306,18 +338,26 @@ void Can_MainFunction_Read(void) {
     }
 }
 
+/* Vai trò: dự phòng cho kiến trúc AUTOSAR chuẩn (Tx theo polling định kỳ)
+ * — không làm gì cả ở đây vì project này gửi đồng bộ ngay trong
+ * Can_Write(), không cần đợi chu kỳ Tx riêng. */
 void Can_MainFunction_Write(void) {
     /* Reserved; see Can.h's doc comment. */
 }
 
+/* Vai trò: getter — tổng số frame đã đọc thành công từ socket. */
 uint32 Can_GetRxFrameCount(uint8 controller_id) {
     return (controller_id < CAN_MAX_CONTROLLERS) ? g_controllers[controller_id].rxFrameCount : 0U;
 }
 
+/* Vai trò: getter — số frame bị loại bỏ (sai định dạng/error/remote/quá
+ * dài) khi đọc từ socket. */
 uint32 Can_GetRxDroppedCount(uint8 controller_id) {
     return (controller_id < CAN_MAX_CONTROLLERS) ? g_controllers[controller_id].rxDroppedCount : 0U;
 }
 
+/* Vai trò: getter — số lần Can_Write thất bại (validate lỗi, controller
+ * chưa STARTED, hoặc write() xuống kernel thất bại). */
 uint32 Can_GetTxFailureCount(uint8 controller_id) {
     return (controller_id < CAN_MAX_CONTROLLERS) ? g_controllers[controller_id].txFailureCount : 0U;
 }

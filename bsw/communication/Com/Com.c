@@ -66,10 +66,17 @@ static Com_ConfigType g_config; /* shallow copy: arrays point into the caller's 
 static Com_IpduRuntimeType g_ipdus[COM_MAX_IPDUS];
 static uint16 g_signalValues[COM_MAX_SIGNALS];
 
+/* Vai trò: kiểm tra 2 khoảng bit [aStart,aEnd) và [bStart,bEnd) có chồng
+ * lấn nhau không — dùng lúc validate config để phát hiện 2 signal (hoặc
+ * signal với vùng counter/CRC) tranh nhau cùng 1 bit. */
 static boolean RangesOverlap(uint16 aStart, uint16 aEnd, uint16 bStart, uint16 bEnd) {
     return ((aStart < bEnd) && (bStart < aEnd)) ? TRUE : FALSE;
 }
 
+/* Vai trò: ghi 1 giá trị (`value`) vào đúng vị trí bit trong 1 frame
+ * 8-byte — đây là nơi 1 signal logic (vd tốc độ) được "nhét" vào payload
+ * vật lý, bit theo bit, chỉ dùng shift + mask (REQ-COM-006, không ép
+ * kiểu struct lên buffer). */
 static void PackBits(uint8 frame[COM_IPDU_LENGTH], uint8 bitPosition, uint8 bitLength,
                      uint16 value) {
     for (uint8 i = 0U; i < bitLength; i++) {
@@ -94,6 +101,8 @@ static void PackBits(uint8 frame[COM_IPDU_LENGTH], uint8 bitPosition, uint8 bitL
     }
 }
 
+/* Vai trò: chiều ngược lại của PackBits — đọc ra 1 giá trị từ đúng vị trí
+ * bit trong frame 8-byte nhận được. */
 static uint16 UnpackBits(const uint8 frame[COM_IPDU_LENGTH], uint8 bitPosition, uint8 bitLength) {
     uint16 value = 0U;
     for (uint8 i = 0U; i < bitLength; i++) {
@@ -111,6 +120,10 @@ static uint16 UnpackBits(const uint8 frame[COM_IPDU_LENGTH], uint8 bitPosition, 
     return value;
 }
 
+/* Vai trò: nạp bảng cấu hình I-PDU + signal tĩnh, validate RẤT kỹ (vị trí
+ * bit không chồng lấn nhau, không chồng vào vùng counter/CRC, giá trị
+ * init nằm trong [min,max]...) — all-or-nothing. Sau khi qua hết validate
+ * thì khởi tạo giá trị signal về initValue và đặt mốc gửi lần đầu. */
 void Com_Init(const Com_ConfigType *config) {
     /* Set unconditionally before any validation, so a re-Init that fails
      * partway through can never leave a PREVIOUS successful init's
@@ -215,6 +228,7 @@ void Com_Init(const Com_ConfigType *config) {
     g_initialized = TRUE;
 }
 
+/* Vai trò: xoá sạch config + state, hạ mọi cờ. */
 void Com_DeInit(void) {
     (void)memset(&g_config, 0, sizeof(g_config));
     (void)memset(g_ipdus, 0, sizeof(g_ipdus));
@@ -223,6 +237,9 @@ void Com_DeInit(void) {
     g_initialized = FALSE;
 }
 
+/* Vai trò: "bật" nhóm I-PDU — cho phép Com_MainFunctionTx bắt đầu gửi.
+ * Nếu initialize=TRUE thì reset luôn alive counter/timeout/giá trị
+ * signal về trạng thái ban đầu (dùng lúc EcuM boot). */
 void Com_IpduGroupStart(Com_IpduGroupIdType group_id, boolean initialize) {
     if (!g_initialized) {
         (void)Det_ReportError(DET_MODULE_ID_COM, 0U, COM_API_ID_IPDU_GROUP_START, DET_ERR_UNINIT);
@@ -250,6 +267,8 @@ void Com_IpduGroupStart(Com_IpduGroupIdType group_id, boolean initialize) {
     }
 }
 
+/* Vai trò: "tắt" nhóm I-PDU — Com_MainFunctionTx ngừng gửi cho tới khi
+ * Start lại. */
 void Com_IpduGroupStop(Com_IpduGroupIdType group_id) {
     if (!g_initialized) {
         (void)Det_ReportError(DET_MODULE_ID_COM, 0U, COM_API_ID_IPDU_GROUP_STOP, DET_ERR_UNINIT);
@@ -263,6 +282,9 @@ void Com_IpduGroupStop(Com_IpduGroupIdType group_id) {
     g_groupEnabled = FALSE;
 }
 
+/* Vai trò: RTE gọi khi SW-C muốn gửi 1 signal — validate range [min,max],
+ * chỉ CẬP NHẬT giá trị vào bộ nhớ đệm (shadow buffer), KHÔNG gửi ngay lên
+ * bus (việc gửi thật là Com_MainFunctionTx theo chu kỳ). */
 uint8 Com_SendSignal(Com_SignalIdType signal_id, const void *signal_data_ptr) {
     if (!g_initialized) {
         (void)Det_ReportError(DET_MODULE_ID_COM, 0U, COM_API_ID_SEND_SIGNAL, DET_ERR_UNINIT);
@@ -288,6 +310,9 @@ uint8 Com_SendSignal(Com_SignalIdType signal_id, const void *signal_data_ptr) {
     return E_OK;
 }
 
+/* Vai trò: RTE gọi khi SW-C muốn đọc 1 signal — trả về giá trị mới nhất
+ * trong bộ nhớ đệm (đã được Com_RxIndication cập nhật lần nhận gần nhất,
+ * hoặc vẫn là initValue nếu chưa nhận được gì). */
 uint8 Com_ReceiveSignal(Com_SignalIdType signal_id, void *signal_data_ptr) {
     if (!g_initialized) {
         (void)Det_ReportError(DET_MODULE_ID_COM, 0U, COM_API_ID_RECEIVE_SIGNAL, DET_ERR_UNINIT);
@@ -302,6 +327,12 @@ uint8 Com_ReceiveSignal(Com_SignalIdType signal_id, void *signal_data_ptr) {
     return E_OK;
 }
 
+/* Vai trò: hàm chạy theo chu kỳ (20ms) — với mỗi I-PDU hướng Tx đến hạn
+ * gửi (dùng mốc TUYỆT ĐỐI, không trôi dồn — giống cách Os.c làm), đóng
+ * gói TẤT CẢ signal thuộc I-PDU đó vào 1 frame 8-byte qua PackBits, ghi
+ * alive counter, tính CRC8 rồi mới forward xuống PduR_ComTransmit. Gửi
+ * thành công mới tăng alive counter (section 6.5). Đây chính là nơi
+ * "payload thật sự được tạo ra". */
 void Com_MainFunctionTx(void) {
     if ((!g_initialized) || (!g_groupEnabled)) {
         return;
@@ -351,6 +382,10 @@ void Com_MainFunctionTx(void) {
     }
 }
 
+/* Vai trò: hàm chạy theo chu kỳ — kiểm tra từng I-PDU hướng Rx đã quá
+ * timeout kể từ lần nhận hợp lệ gần nhất chưa (REQ-ASW liên quan
+ * COMM_FAULT), cập nhật cờ isTimedOut. Không tự nó "nhận" dữ liệu — việc
+ * đó là Com_RxIndication. */
 void Com_MainFunctionRx(void) {
     if (!g_initialized) {
         return;
@@ -368,6 +403,15 @@ void Com_MainFunctionRx(void) {
     }
 }
 
+/* Vai trò: PduR gọi khi có 1 I-PDU mới tới — đây là nơi payload nhận
+ * được THẬT SỰ được diễn giải. Trình tự kiểm tra NGHIÊM NGẶT theo đúng
+ * thứ tự spec: (1) DLC đúng, (2) CRC8 đúng (REQ-COM-003 — check trước cả
+ * counter), (3) alive counter hợp lệ, (4) mọi signal decode ra đều nằm
+ * trong range cho phép — TẤT CẢ decode trước, chỉ "commit" (ghi vào
+ * signal buffer thật) nếu mọi signal đều ok, để 1 frame lỗi không bao
+ * giờ cập nhật dở dang (REQ-COM-004). Bất kỳ bước nào fail thì loại
+ * NGUYÊN frame, tăng đúng counter lỗi tương ứng, dừng ngay — giá trị
+ * signal cũ giữ nguyên. */
 void Com_RxIndication(PduIdType rx_pdu_id, const PduInfoType *pdu_info_ptr) {
     if (!g_initialized) {
         (void)Det_ReportError(DET_MODULE_ID_COM, 0U, COM_API_ID_RX_INDICATION, DET_ERR_UNINIT);
@@ -462,6 +506,8 @@ void Com_RxIndication(PduIdType rx_pdu_id, const PduInfoType *pdu_info_ptr) {
     }
 }
 
+/* Vai trò: PduR gọi khi 1 I-PDU Tx đã được xác nhận gửi xuống lớp dưới
+ * thành công — chỉ đếm lại, phục vụ quan sát/test. */
 void Com_TxConfirmation(PduIdType tx_pdu_id) {
     if (!g_initialized) {
         (void)Det_ReportError(DET_MODULE_ID_COM, 0U, COM_API_ID_TX_CONFIRMATION, DET_ERR_UNINIT);
@@ -476,38 +522,51 @@ void Com_TxConfirmation(PduIdType tx_pdu_id) {
     g_ipdus[tx_pdu_id].txConfirmationCount++;
 }
 
+/* Vai trò: getter — số lần gửi thành công của 1 I-PDU. */
 uint32 Com_GetIpduTxCount(Com_IPduIdType ipdu_id) {
     return (ipdu_id < COM_MAX_IPDUS) ? g_ipdus[ipdu_id].txCount : 0U;
 }
 
+/* Vai trò: getter — số lần gửi thất bại (PduR/CanIf/Can từ chối). */
 uint32 Com_GetIpduTxFailureCount(Com_IPduIdType ipdu_id) {
     return (ipdu_id < COM_MAX_IPDUS) ? g_ipdus[ipdu_id].txFailureCount : 0U;
 }
 
+/* Vai trò: getter — số lần nhận xác nhận Tx thành công từ lớp dưới. */
 uint32 Com_GetTxConfirmationCount(Com_IPduIdType ipdu_id) {
     return (ipdu_id < COM_MAX_IPDUS) ? g_ipdus[ipdu_id].txConfirmationCount : 0U;
 }
 
+/* Vai trò: getter — số I-PDU nhận hợp lệ (qua hết DLC/CRC/counter/range). */
 uint32 Com_GetIpduRxValidCount(Com_IPduIdType ipdu_id) {
     return (ipdu_id < COM_MAX_IPDUS) ? g_ipdus[ipdu_id].rxValidCount : 0U;
 }
 
+/* Vai trò: getter — số I-PDU bị loại vì sai DLC. */
 uint32 Com_GetIpduRxDlcErrorCount(Com_IPduIdType ipdu_id) {
     return (ipdu_id < COM_MAX_IPDUS) ? g_ipdus[ipdu_id].rxDlcErrorCount : 0U;
 }
 
+/* Vai trò: getter — số I-PDU bị loại vì CRC8 sai (dữ liệu bị hỏng/giả
+ * mạo). */
 uint32 Com_GetIpduRxCrcErrorCount(Com_IPduIdType ipdu_id) {
     return (ipdu_id < COM_MAX_IPDUS) ? g_ipdus[ipdu_id].rxCrcErrorCount : 0U;
 }
 
+/* Vai trò: getter — số I-PDU bị loại vì alive counter sai thứ tự (mất
+ * frame/lặp/replay). */
 uint32 Com_GetIpduRxCounterErrorCount(Com_IPduIdType ipdu_id) {
     return (ipdu_id < COM_MAX_IPDUS) ? g_ipdus[ipdu_id].rxCounterErrorCount : 0U;
 }
 
+/* Vai trò: getter — số I-PDU bị loại vì có signal decode ra ngoài
+ * [min,max]. */
 uint32 Com_GetIpduRxSignalRangeErrorCount(Com_IPduIdType ipdu_id) {
     return (ipdu_id < COM_MAX_IPDUS) ? g_ipdus[ipdu_id].rxSignalRangeErrorCount : 0U;
 }
 
+/* Vai trò: getter — I-PDU hướng Rx này hiện có đang timeout không (đã
+ * quá timeoutMs kể từ lần nhận hợp lệ gần nhất). */
 boolean Com_GetIpduRxTimeoutStatus(Com_IPduIdType ipdu_id, boolean *isTimedOut) {
     if ((ipdu_id >= g_config.numIpdus) || (g_config.ipdus[ipdu_id].direction != COM_IPDU_DIR_RX) ||
         (!g_ipdus[ipdu_id].hasCounter) || (isTimedOut == NULL)) {

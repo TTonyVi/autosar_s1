@@ -16,19 +16,29 @@
 static Dem_EventRecordType g_events[DEM_NUM_EVENT_SLOTS];
 static boolean g_initialized;
 
+/* Vai trò: reset toàn bộ bảng event (mọi event về trạng thái mặc định),
+ * bật cờ init. */
 void Dem_Init(void) {
     (void)memset(g_events, 0, sizeof(g_events));
     g_initialized = TRUE;
 }
 
+/* Vai trò: tắt module (chỉ hạ cờ init, giữ nguyên dữ liệu event). */
 void Dem_DeInit(void) {
     g_initialized = FALSE;
 }
 
+/* Vai trò: kiểm tra event id có nằm trong khoảng hợp lệ đã khai báo. */
 static boolean IsValidEventId(Dem_EventIdType event_id) {
     return (event_id >= DEM_EVENT_ID_MIN) && (event_id <= DEM_EVENT_ID_MAX);
 }
 
+/* Vai trò: API TRUNG TÂM để 1 module BSW (Com, IoHwAb...) báo trạng thái
+ * hiện tại của 1 sự kiện chẩn đoán (PASSED/FAILED) — khác Det ở chỗ đây
+ * là lỗi VẬN HÀNH (Rx timeout, CRC/counter sai, mất link...), không phải
+ * lỗi lập trình. Khi chuyển sang FAILED lần đầu thì tăng occurrenceCount
+ * (không tăng nếu đã FAILED từ trước — chỉ đếm số lần "mới xảy ra"), luôn
+ * cập nhật timestamp lần PASSED/FAILED gần nhất. */
 Std_ReturnType Dem_SetEventStatus(Dem_EventIdType event_id, Dem_EventStatusType status) {
     if (!g_initialized) {
         return E_NOT_OK;
@@ -64,12 +74,17 @@ Std_ReturnType Dem_SetEventStatus(Dem_EventIdType event_id, Dem_EventStatusType 
     return E_OK;
 }
 
+/* Vai trò: hook chu kỳ (100ms task) dành cho logic tổng hợp/qualify định
+ * kỳ trong tương lai — hiện tại chưa có gì để làm, giữ chỗ đúng chữ ký
+ * API theo spec section 7.4. */
 void Dem_MainFunction(void) {
     /* Phase 1: no periodic aggregation logic yet. Present so the public
      * API surface matches spec section 7.4 ahead of the phases that will
      * actually set events from real detection logic. */
 }
 
+/* Vai trò: đọc lại toàn bộ record của 1 event (trạng thái hiện tại, số
+ * lần xảy ra, timestamp gần nhất) — SW-C dùng để hiển thị đèn cảnh báo. */
 Std_ReturnType Dem_GetEventRecord(Dem_EventIdType event_id, Dem_EventRecordType *out) {
     if (out == NULL) {
         return E_NOT_OK;

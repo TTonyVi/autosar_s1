@@ -140,11 +140,15 @@ static const Com_ConfigType g_comConfig = {
 
 /* ------------------------- Os: section 8.2 --------------------------- */
 
+/* Vai trò: thân task ưu tiên cao nhất, chu kỳ 1ms — chỉ đọc/ghi socket
+ * CAN, giống hệt SensorEcu_Cfg.c. */
 static void Task_Bsw_1ms(void) {
     Can_MainFunction_Read();
     Can_MainFunction_Write();
 }
 
+/* Vai trò: thân task chu kỳ 5ms — khác SensorEcu ở chỗ chạy
+ * Display_MainFunction() (không phải Adc/Dio) rồi IoHwAb_MainFunction. */
 static void Task_Io_5ms(void) {
     Display_MainFunction();
     IoHwAb_MainFunction();
@@ -152,7 +156,10 @@ static void Task_Io_5ms(void) {
 
 static const char *const kStateNames[4] = {"OFF", "NORMAL", "OVERSPEED", "COMM_FAULT"};
 
-/** Section 15.8: every cluster state transition is logged with a
+/** Vai trò: chỉ ClusterEcu mới có — in log mỗi khi ClusterControlSwc CHUYỂN
+ * trạng thái (OFF/NORMAL/OVERSPEED/COMM_FAULT), lần seed đầu tiên không
+ * tính là "chuyển" để tránh in ngay khi vừa khởi động.
+ * Section 15.8: every cluster state transition is logged with a
  *  timestamp. Transitions are rare by nature, so this stays within the
  *  bounded-volume rule of section 13.4 even though it sits in a 10 ms
  *  task — only a change emits a line. */
@@ -175,17 +182,22 @@ static void LogStateTransition(void) {
     }
 }
 
+/* Vai trò: thân task chu kỳ 10ms — chạy runnable ứng dụng (state
+ * machine) rồi kiểm tra log chuyển trạng thái. */
 static void Task_App_10ms(void) {
     Rte_Task_10ms();
     LogStateTransition();
 }
 
+/* Vai trò: thân task chu kỳ 20ms — chạy Com Tx/Rx, giống SensorEcu_Cfg.c. */
 static void Task_BswCom_20ms(void) {
     Com_MainFunctionTx();
     Com_MainFunctionRx();
 }
 
-/** Section 15.8: both ECUs log DEM transitions. Only a change in a
+/** Vai trò: giống hệt LogDemTransitions của SensorEcu_Cfg.c — chỉ in khi
+ * trạng thái 1 event Dem vừa đổi.
+ * Section 15.8: both ECUs log DEM transitions. Only a change in a
  *  qualified status emits a line, so the volume stays bounded. */
 static void LogDemTransitions(void) {
     /* Seeded to PASSED, which is exactly the state a freshly initialized
@@ -214,6 +226,9 @@ static void LogDemTransitions(void) {
     }
 }
 
+/* Vai trò: giống LogStatus của SensorEcu_Cfg.c — 1 dòng trạng thái tổng
+ * quát + 1 dòng "[Layers]" mỗi giây, phục vụ IT-04 xác nhận Rx side của
+ * VehicleStatus đi qua đủ từng tầng (Can → CanIf → PduR → Com → Rte). */
 static void LogStatus(void) {
     static uint8 tick;
     tick++;
@@ -249,6 +264,8 @@ static void LogStatus(void) {
                (unsigned)Rte_GetRxUpdateCount());
 }
 
+/* Vai trò: thân task chu kỳ 100ms — chạy runnable 100ms (ghi display),
+ * tổng hợp Dem, in 2 dòng log định kỳ. */
 static void Task_App_100ms(void) {
     Rte_Task_100ms();
     Dem_MainFunction();
@@ -267,6 +284,11 @@ static const Os_ConfigType g_osConfig = {.tasks = g_osTasks, .numTasks = 5U};
 
 static EcuM_ConfigType g_ecuMConfig;
 
+/* Vai trò: LẮP RÁP EcuM_ConfigType cho ClusterEcu — giống
+ * SensorEcu_BuildConfig nhưng thêm 1 nhánh riêng: nếu `--display-link`
+ * rỗng/disabled thì bỏ hẳn virtualHwConfig/displayConfig (NULL) thay vì
+ * vá đường dẫn — cluster có thể chạy hoàn toàn không cần panel, chỉ log
+ * (section 15.4). */
 const EcuM_ConfigType *ClusterEcu_BuildConfig(const EcuM_PostBuildType *postBuild) {
     if ((postBuild == NULL) || (postBuild->canInterface == NULL)) {
         return NULL;

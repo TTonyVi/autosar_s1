@@ -257,19 +257,20 @@ flowchart TB
     ECUM ==>|"SysTimer_Init, Os_Counter_Init, Gpt_Init"| SYSTIMER
     ECUM ==>|"Os_Init, then start schedule"| OS
 
-    T1 -. "Can_MainFunction_Read / _Write" .-> CAN
+    T1 -. "Can_MainFunction_Read (Rx drain; _Write is a reserved no-op)" .-> CAN
     T5 -. "Adc/Dio_MainFunction_Read, IoHwAb_MainFunction, Display_MainFunction" .-> IOHWAB
     T10 -. "Rte_Task_10ms" .-> RTE
-    T20 -. "Com_MainFunctionTx / Rx" .-> COM
+    T20 -. "Com_MainFunctionTx (pack + send, synchronous down to Can_Write) / _Rx (timeout check only)" .-> COM
     T100 -. "Rte_Task_100ms" .-> SWC
     T100 -. "Dem_MainFunction" .-> DEM
 
     GPT -. "Tx period, Rx deadline" .-> COM
-    GPT -. "sample freshness age" .-> IOHWAB
+    GPT -. "display-link timeout" .-> IOHWAB
 
     PATH -. "invalid param / bad config / uninit" .-> DET
     OS -. "deadline overrun" .-> DET
-    COM -. "timeout, CRC/counter failure" .-> DEM
+    COM -. "Rx timeout / CRC / counter counters (polled, not pushed)" .-> RTE
+    RTE -. "Dem_SetEventStatus: *_STATUS_TIMEOUT / *_INTEGRITY" .-> DEM
     IOHWAB -. "link lost, out of range" .-> DEM
 
     classDef busNode fill:#3b1f1f,stroke:#e06c75,color:#fff
@@ -294,7 +295,7 @@ carries no payload (a periodic release, a time query, an error report).
 | `Rte` | The only way a SW-C reaches anything: maps SW-C ports onto `Com_SendSignal`/`Com_ReceiveSignal` and `IoHwAb` calls. Carries payload but adds no logic of its own. | Yes |
 | `Det` | Synchronous development-error sink. Never part of a healthy cycle: if `Det` fires, a caller violated a contract. | No |
 | `Adc` `Dio` `IoHwAb` `Com` `PduR` `CanIf` `Can` `Display` | The data path itself, detailed in the two diagrams above. | Yes |
-| `Dem` | Holds qualified fault state for events the cycle discovers (Rx timeout, CRC/counter failure, link lost, out-of-range). `Dem_MainFunction` in the 100 ms task ages and qualifies them; the SW-C reads the resulting state, it does not read `Dem` directly. | No |
+| `Dem` | Holds qualified fault state for events the cycle discovers (Rx timeout, CRC/counter failure, link lost, out-of-range). `Dem_MainFunction` in the 100 ms task ages and qualifies them; the SW-C reads the resulting state, it does not read `Dem` directly. `Com` itself never calls `Dem` (it only reports to `Det`); the four COM-related events are set by the RTE, which polls `Com`'s error counters each 10 ms — in real AUTOSAR the same job belongs to the SW-C/E2E layer via a Dem service port, so this is a documented simplification. | No |
 
 The practical reading: a payload byte only ever moves through rail 3, but
 it moves only because rail 2 released the task, and only because rail 1

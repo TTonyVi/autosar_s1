@@ -58,6 +58,8 @@ typedef struct {
 
 static VirtualHw_LinkStateType g_links[VIRTUALHW_MAX_LINKS];
 
+/* Vai trò: kiểm tra 1 datagram nhận được có "hợp lệ" không — toàn ký tự
+ * ASCII in được, có ít nhất 1 dấu "=" (đúng định dạng key=value;...). */
 static boolean IsWellFormed(const char *data, uint16 length) {
     if ((length == 0U) || (length > VIRTUALHW_MAX_PAYLOAD)) {
         return FALSE;
@@ -75,12 +77,16 @@ static boolean IsWellFormed(const char *data, uint16 length) {
     return hasEquals;
 }
 
+/* Vai trò: dựng struct sockaddr_un từ đường dẫn file socket (vd
+ * "/tmp/vhw_sensor.sock"). */
 static void BuildSockaddr(const char *path, struct sockaddr_un *outAddr) {
     (void)memset(outAddr, 0, sizeof(*outAddr));
     outAddr->sun_family = AF_UNIX;
     (void)strncpy(outAddr->sun_path, path, sizeof(outAddr->sun_path) - 1U);
 }
 
+/* Vai trò: mở 1 socket AF_UNIX/SOCK_DGRAM và set non-blocking (chưa bind,
+ * chưa connect — hai việc đó tuỳ hướng RX/TX làm ở nơi gọi). */
 static int OpenNonBlockingUnixDgram(void) {
     int fd = socket(AF_UNIX, SOCK_DGRAM, 0);
     if (fd < 0) {
@@ -98,6 +104,12 @@ static int OpenNonBlockingUnixDgram(void) {
     return fd;
 }
 
+/* Vai trò: khởi tạo tất cả virtual hw link theo config — mở socket
+ * AF_UNIX cho từng link; link hướng RX thì unlink file cũ (tránh lỗi
+ * "address in use" từ lần chạy trước — REQ-ECUM-006) rồi bind; link
+ * hướng TX không cần bind. Bất kỳ lỗi nào cũng KHÔNG làm dừng cả init
+ * (REQ-ECUM-005 — thiếu HMI/peer là chuyện bình thường, không phải lỗi
+ * khởi động nghiêm trọng như Can). */
 void VirtualHw_Init(const VirtualHw_ConfigType *config) {
     if (config == NULL) {
         (void)Det_ReportError(DET_MODULE_ID_VIRTUALHW, 0U, VIRTUALHW_API_ID_INIT,
@@ -158,6 +170,8 @@ void VirtualHw_Init(const VirtualHw_ConfigType *config) {
     }
 }
 
+/* Vai trò: đóng hết socket, xoá file socket của các link RX (dọn sạch
+ * cho lần chạy sau), reset toàn bộ state. */
 void VirtualHw_DeInit(void) {
     for (uint8 i = 0U; i < VIRTUALHW_MAX_LINKS; i++) {
         if (g_links[i].configured) {
@@ -175,6 +189,11 @@ void VirtualHw_DeInit(void) {
     }
 }
 
+/* Vai trò: hàm lõi phía nhận — đọc dồn (không block) các datagram mới từ
+ * 1 link RX, loại datagram sai định dạng (REQ-VHW-003) hoặc trùng/cũ hơn
+ * SEQ đã nhận (REQ-VHW-004, chống replay/out-of-order), rồi lưu lại làm
+ * "giá trị mới nhất" kèm mốc thời gian nhận — đây là nơi Adc/Dio thật sự
+ * lấy dữ liệu qua VirtualHw_GetLatestPayload. */
 void VirtualHw_MainFunction_Read(VirtualHw_LinkIdType linkId) {
     if ((linkId >= VIRTUALHW_MAX_LINKS) || (!g_links[linkId].configured) ||
         (g_links[linkId].config.direction != VIRTUALHW_DIR_RX)) {
@@ -226,6 +245,9 @@ void VirtualHw_MainFunction_Read(VirtualHw_LinkIdType linkId) {
     }
 }
 
+/* Vai trò: trả về payload text mới nhất đã nhận được trên 1 link, kèm
+ * tuổi (ms) và cờ "còn tươi hay không" (so với stalenessTimeoutMs cấu
+ * hình) — đây là API mà Adc/Dio gọi để lấy dữ liệu cảm biến. */
 boolean VirtualHw_GetLatestPayload(VirtualHw_LinkIdType linkId, char *buffer, uint16 bufferSize,
                                    Gpt_ValueType *ageMsOut, boolean *isFreshOut) {
     if ((linkId >= VIRTUALHW_MAX_LINKS) || (!g_links[linkId].configured)) {
@@ -257,6 +279,9 @@ boolean VirtualHw_GetLatestPayload(VirtualHw_LinkIdType linkId, char *buffer, ui
     return TRUE;
 }
 
+/* Vai trò: hàm lõi phía gửi — sendto() 1 payload text ra 1 link TX (vd
+ * Display gửi frame hiển thị ra HMI). Không có ai lắng nghe ở đầu kia
+ * (ENOENT) hay lỗi khác đều KHÔNG fatal, chỉ đếm lại (REQ-VHW-005). */
 Std_ReturnType VirtualHw_Send(VirtualHw_LinkIdType linkId, const char *payload,
                               uint16 payloadLength) {
     if ((linkId >= VIRTUALHW_MAX_LINKS) || (!g_links[linkId].configured) ||
@@ -291,18 +316,23 @@ Std_ReturnType VirtualHw_Send(VirtualHw_LinkIdType linkId, const char *payload,
     return E_OK;
 }
 
+/* Vai trò: getter — số datagram nhận hợp lệ (đã lọt qua IsWellFormed +
+ * kiểm tra SEQ). */
 uint32 VirtualHw_GetRxValidCount(VirtualHw_LinkIdType linkId) {
     return (linkId < VIRTUALHW_MAX_LINKS) ? g_links[linkId].rxValidCount : 0U;
 }
 
+/* Vai trò: getter — số datagram bị loại vì sai định dạng. */
 uint32 VirtualHw_GetRxMalformedCount(VirtualHw_LinkIdType linkId) {
     return (linkId < VIRTUALHW_MAX_LINKS) ? g_links[linkId].rxMalformedCount : 0U;
 }
 
+/* Vai trò: getter — số datagram bị loại vì SEQ trùng/cũ hơn. */
 uint32 VirtualHw_GetRxDuplicateCount(VirtualHw_LinkIdType linkId) {
     return (linkId < VIRTUALHW_MAX_LINKS) ? g_links[linkId].rxDuplicateCount : 0U;
 }
 
+/* Vai trò: getter — số lần VirtualHw_Send thất bại. */
 uint32 VirtualHw_GetTxFailureCount(VirtualHw_LinkIdType linkId) {
     return (linkId < VIRTUALHW_MAX_LINKS) ? g_links[linkId].txFailureCount : 0U;
 }

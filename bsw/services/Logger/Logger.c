@@ -17,6 +17,8 @@ static boolean g_timeBaseReady;
 
 static const char *const kSeverityNames[4] = {"ERROR", "WARN", "INFO", "DEBUG"};
 
+/* Vai trò: nạp tên ECU (hiện trong mỗi dòng log) + mức log tối thiểu, bật
+ * cờ đã init. */
 void Logger_Init(const char *ecuName, Logger_LevelType level) {
     g_ecuName = (ecuName != NULL) ? ecuName : "Ecu";
     g_level = (level <= LOGGER_LEVEL_DEBUG) ? level : LOGGER_LEVEL_INFO;
@@ -25,26 +27,38 @@ void Logger_Init(const char *ecuName, Logger_LevelType level) {
     g_initialized = TRUE;
 }
 
+/* Vai trò: tắt module — flush nốt output còn kẹt trong buffer trước khi
+ * dừng, hạ hết cờ. */
 void Logger_DeInit(void) {
     (void)fflush(stdout);
     g_timeBaseReady = FALSE;
     g_initialized = FALSE;
 }
 
+/* Vai trò: báo cho Logger biết Gpt đã init xong, từ giờ timestamp trong
+ * log là thời gian thật thay vì luôn in 0. */
 void Logger_NotifyTimeBaseReady(void) {
     g_timeBaseReady = TRUE;
 }
 
+/* Vai trò: đổi mức log tối thiểu lúc chạy (vd chỉ in ERROR/WARN). */
 void Logger_SetLevel(Logger_LevelType level) {
     if (level <= LOGGER_LEVEL_DEBUG) {
         g_level = level;
     }
 }
 
+/* Vai trò: getter — mức log hiện tại. */
 Logger_LevelType Logger_GetLevel(void) {
     return g_level;
 }
 
+/* Vai trò: API TRUNG TÂM để in 1 dòng log — lọc theo severity/level, định
+ * dạng chuỗi kiểu printf, in ra stdout theo đúng khuôn "[time][ecu][module]
+ * [severity] message" (section 13.4), rồi flush ngay lập tức (bugfix
+ * thật: nếu không flush, khi stdout bị redirect ra file thì log chỉ hiện
+ * ra lúc process thoát, làm hỏng khả năng "xem log ECU đang chạy" —
+ * IT-06 đã bắt được lỗi này). */
 void Logger_Log(Logger_LevelType severity, const char *module, const char *format, ...) {
     if ((!g_initialized) || (severity > g_level) || (module == NULL) || (format == NULL)) {
         return;
@@ -79,6 +93,8 @@ void Logger_Log(Logger_LevelType severity, const char *module, const char *forma
     g_emittedCount++;
 }
 
+/* Vai trò: parse chuỗi text ("error"/"warn"/"info"/"debug") — vd từ tham
+ * số dòng lệnh --log-level — thành enum Logger_LevelType. */
 Std_ReturnType Logger_ParseLevel(const char *text, Logger_LevelType *out) {
     if ((text == NULL) || (out == NULL)) {
         return E_NOT_OK;
@@ -97,6 +113,7 @@ Std_ReturnType Logger_ParseLevel(const char *text, Logger_LevelType *out) {
     return E_OK;
 }
 
+/* Vai trò: getter — tổng số dòng log đã in ra thành công. */
 uint32 Logger_GetEmittedCount(void) {
     return g_emittedCount;
 }

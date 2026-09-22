@@ -11,6 +11,7 @@ static uint32 g_totalErrorCount;
 static uint32 g_moduleErrorCount[DET_MAX_MODULE_ID];
 static boolean g_initialized;
 
+/* Vai trò: reset toàn bộ ring buffer lỗi + counter về 0, bật cờ init. */
 void Det_Init(void) {
     g_ringHead = 0U;
     g_ringCount = 0U;
@@ -20,6 +21,9 @@ void Det_Init(void) {
     g_initialized = TRUE;
 }
 
+/* Vai trò: tắt module — cố ý KHÔNG xoá dữ liệu cũ (để 1 bản crash-dump
+ * chụp ngay sau DeInit vẫn còn thấy các record gần nhất), gọi lại nhiều
+ * lần hoặc gọi trước Init đều an toàn (REQ-ECUM-004). */
 void Det_DeInit(void) {
     /* Idempotent per REQ-ECUM-004: calling this again, or before Init, is
      * safe. State is intentionally left as-is (not cleared) so a crash
@@ -27,6 +31,12 @@ void Det_DeInit(void) {
     g_initialized = FALSE;
 }
 
+/* Vai trò: API TRUNG TÂM mà mọi module BSW/ASW gọi khi phát hiện lỗi lập
+ * trình đồng bộ (null pointer, config sai, gọi khi chưa init...) — tăng
+ * counter tổng + counter theo từng module (bão hoà, không tràn số), ghi 1
+ * record mới vào ring buffer vòng tròn (ghi đè cái cũ nhất khi đầy). Đây
+ * KHÔNG phải Dem (lỗi vận hành/production) — Det chỉ dành cho lỗi phát
+ * triển, không đại diện cho fault thật của hệ thống. */
 Std_ReturnType Det_ReportError(Det_ModuleIdType module_id, Det_InstanceIdType instance_id,
                                Det_ApiIdType api_id, Det_ErrorIdType error_id) {
     if (!g_initialized) {
@@ -59,10 +69,12 @@ Std_ReturnType Det_ReportError(Det_ModuleIdType module_id, Det_InstanceIdType in
     return E_OK;
 }
 
+/* Vai trò: getter — tổng số lỗi đã báo qua Det_ReportError. */
 uint32 Det_GetTotalErrorCount(void) {
     return g_totalErrorCount;
 }
 
+/* Vai trò: getter — số lỗi đã báo riêng của 1 module cụ thể. */
 uint32 Det_GetModuleErrorCount(Det_ModuleIdType module_id) {
     if (module_id >= DET_MAX_MODULE_ID) {
         return 0U;
@@ -70,10 +82,14 @@ uint32 Det_GetModuleErrorCount(Det_ModuleIdType module_id) {
     return g_moduleErrorCount[module_id];
 }
 
+/* Vai trò: getter — số record hiện đang có trong ring buffer (tối đa
+ * DET_MAX_RECORDS). */
 uint32 Det_GetRecordCount(void) {
     return g_ringCount;
 }
 
+/* Vai trò: đọc lại 1 record theo thứ tự "cũ nhất trước" (index 0 = record
+ * cũ nhất còn lưu) — dùng để in log/debug chuỗi lỗi đã xảy ra. */
 Std_ReturnType Det_GetRecord(uint32 indexFromOldest, Det_RecordType *out) {
     if (out == NULL) {
         return E_NOT_OK;

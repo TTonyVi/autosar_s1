@@ -31,6 +31,7 @@
 static boolean g_initialized = FALSE;
 static struct timespec g_startTime;
 
+/* Vai trò: tính hiệu 2 mốc thời gian (struct timespec) ra mili-giây. */
 static Gpt_ValueType TimespecDiffMs(const struct timespec *later, const struct timespec *earlier) {
     int64_t secDiff = (int64_t)later->tv_sec - (int64_t)earlier->tv_sec;
     int64_t nsecDiff = (int64_t)later->tv_nsec - (int64_t)earlier->tv_nsec;
@@ -43,6 +44,9 @@ static Gpt_ValueType TimespecDiffMs(const struct timespec *later, const struct t
     return (Gpt_ValueType)ms;
 }
 
+/* Vai trò: khởi động time base — lưu lại mốc "thời điểm 0" bằng
+ * clock_gettime(CLOCK_MONOTONIC); mọi lần đọc sau đó là khoảng cách tính
+ * từ mốc này. */
 void Gpt_Init(const Gpt_ConfigType *config) {
     if (config == NULL) {
         (void)Det_ReportError(DET_MODULE_ID_GPT, 0U, GPT_API_ID_INIT, DET_ERR_NULL_POINTER);
@@ -54,10 +58,14 @@ void Gpt_Init(const Gpt_ConfigType *config) {
     g_initialized = TRUE;
 }
 
+/* Vai trò: tắt module (chỉ hạ cờ init). */
 void Gpt_DeInit(void) {
     g_initialized = FALSE;
 }
 
+/* Vai trò: trả về số mili-giây đã trôi qua kể từ lúc Gpt_Init — đây là
+ * "đồng hồ mili-giây" mà mọi module BSW khác dùng để tính chu kỳ/timeout
+ * (ngoại trừ Os, vốn dùng Os_Counter/SysTimer riêng, không qua Gpt). */
 Gpt_ValueType Gpt_GetTimeElapsed(Gpt_ChannelType channel) {
     if (channel != GPT_CHANNEL_TIME_BASE) {
         (void)Det_ReportError(DET_MODULE_ID_GPT, 0U, GPT_API_ID_GET_TIME_ELAPSED,

@@ -74,7 +74,8 @@ typedef struct {
 
 static VirtualHw_LinkStateType g_links[VIRTUALHW_MAX_LINKS];
 
-/* Identical to VirtualHw.c's own well-formedness rule (section 15.5.2). */
+/* Vai trò: kiểm tra định dạng datagram hợp lệ — giống hệt IsWellFormed
+ * của VirtualHw.c thật (section 15.5.2). */
 static boolean IsWellFormed(const char *data, uint16 length) {
     if ((length == 0U) || (length > VIRTUALHW_MAX_PAYLOAD)) {
         return FALSE;
@@ -92,6 +93,8 @@ static boolean IsWellFormed(const char *data, uint16 length) {
     return hasEquals;
 }
 
+/* Vai trò: giống VirtualHw_Init thật nhưng không mở socket — không có
+ * phần cứng để fail nên mọi link cấu hình hợp lệ đều "sẵn sàng" ngay. */
 void VirtualHw_Init(const VirtualHw_ConfigType *config) {
     if (config == NULL) {
         (void)Det_ReportError(DET_MODULE_ID_VIRTUALHW, 0U, VIRTUALHW_API_ID_INIT,
@@ -121,10 +124,14 @@ void VirtualHw_Init(const VirtualHw_ConfigType *config) {
     }
 }
 
+/* Vai trò: reset toàn bộ state (xoá cả hàng đợi inject). */
 void VirtualHw_DeInit(void) {
     (void)memset(g_links, 0, sizeof(g_links));
 }
 
+/* Vai trò: rút datagram từ hàng đợi inject (thay vì đọc socket) — logic
+ * lọc malformed/duplicate giống hệt bản thật, chỉ khác nguồn dữ liệu đầu
+ * vào là VirtualHw_StubInject() thay vì 1 socket AF_UNIX. */
 void VirtualHw_MainFunction_Read(VirtualHw_LinkIdType linkId) {
     if ((linkId >= VIRTUALHW_MAX_LINKS) || (!g_links[linkId].configured) ||
         (g_links[linkId].config.direction != VIRTUALHW_DIR_RX)) {
@@ -173,6 +180,8 @@ void VirtualHw_MainFunction_Read(VirtualHw_LinkIdType linkId) {
     }
 }
 
+/* Vai trò: giống hệt bản thật — trả về payload mới nhất + tuổi + cờ
+ * "tươi hay không". */
 boolean VirtualHw_GetLatestPayload(VirtualHw_LinkIdType linkId, char *buffer, uint16 bufferSize,
                                    Gpt_ValueType *ageMsOut, boolean *isFreshOut) {
     if ((linkId >= VIRTUALHW_MAX_LINKS) || (!g_links[linkId].configured)) {
@@ -204,6 +213,9 @@ boolean VirtualHw_GetLatestPayload(VirtualHw_LinkIdType linkId, char *buffer, ui
     return TRUE;
 }
 
+/* Vai trò: thay vì sendto() ra socket, chỉ lưu payload vào "lastSent" —
+ * test đọc lại qua VirtualHw_StubGetLastSent để kiểm tra Display/HMI gửi
+ * đúng nội dung gì. */
 Std_ReturnType VirtualHw_Send(VirtualHw_LinkIdType linkId, const char *payload,
                               uint16 payloadLength) {
     if ((linkId >= VIRTUALHW_MAX_LINKS) || (!g_links[linkId].configured) ||
@@ -224,22 +236,29 @@ Std_ReturnType VirtualHw_Send(VirtualHw_LinkIdType linkId, const char *payload,
     return E_OK;
 }
 
+/* Vai trò: getter — số datagram nhận hợp lệ (giống bản thật). */
 uint32 VirtualHw_GetRxValidCount(VirtualHw_LinkIdType linkId) {
     return (linkId < VIRTUALHW_MAX_LINKS) ? g_links[linkId].rxValidCount : 0U;
 }
 
+/* Vai trò: getter — số datagram bị loại vì sai định dạng. */
 uint32 VirtualHw_GetRxMalformedCount(VirtualHw_LinkIdType linkId) {
     return (linkId < VIRTUALHW_MAX_LINKS) ? g_links[linkId].rxMalformedCount : 0U;
 }
 
+/* Vai trò: getter — số datagram bị loại vì trùng/cũ hơn SEQ. */
 uint32 VirtualHw_GetRxDuplicateCount(VirtualHw_LinkIdType linkId) {
     return (linkId < VIRTUALHW_MAX_LINKS) ? g_links[linkId].rxDuplicateCount : 0U;
 }
 
+/* Vai trò: getter — số lần VirtualHw_Send thất bại. */
 uint32 VirtualHw_GetTxFailureCount(VirtualHw_LinkIdType linkId) {
     return (linkId < VIRTUALHW_MAX_LINKS) ? g_links[linkId].txFailureCount : 0U;
 }
 
+/* Vai trò: API riêng của bản stub (test dùng) — "bơm" 1 datagram giả vào
+ * hàng đợi inject của 1 link, mô phỏng việc có dữ liệu mới tới trên
+ * socket thật. */
 void VirtualHw_StubInject(VirtualHw_LinkIdType linkId, const char *payload, uint16 length) {
     if ((linkId >= VIRTUALHW_MAX_LINKS) || (!g_links[linkId].configured) || (payload == NULL)) {
         return;
@@ -256,6 +275,8 @@ void VirtualHw_StubInject(VirtualHw_LinkIdType linkId, const char *payload, uint
     link->injectCount++;
 }
 
+/* Vai trò: API riêng của bản stub (test dùng) — đọc lại payload cuối
+ * cùng mà VirtualHw_Send đã "gửi", để test kiểm tra nội dung. */
 boolean VirtualHw_StubGetLastSent(VirtualHw_LinkIdType linkId, char *buffer, uint16 bufferSize) {
     if ((linkId >= VIRTUALHW_MAX_LINKS) || (!g_links[linkId].hasSent) || (buffer == NULL) ||
         (bufferSize == 0U)) {

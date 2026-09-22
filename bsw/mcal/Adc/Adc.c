@@ -26,14 +26,19 @@ typedef struct {
 static Adc_GroupStateType g_groups[ADC_MAX_GROUPS];
 static boolean g_initialized;
 
+/* Vai trò: dựng chuỗi khoá "ADC<n>" để tra trong payload text nhận được
+ * từ VirtualHw (vd "ADC0=1613;DIO0=1;SEQ=7"). */
 static void BuildAdcKey(uint8 channelId, char *outKey, size_t outKeySize) {
     (void)snprintf(outKey, outKeySize, "ADC%u", (unsigned)channelId);
 }
 
+/* Vai trò: kiểm tra group id hợp lệ + đã init + đã configured. */
 static boolean GroupIsValid(Adc_GroupType group) {
     return g_initialized && (group < ADC_MAX_GROUPS) && g_groups[group].configured;
 }
 
+/* Vai trò: nạp config các group ADC (mỗi group gắn với 1 virtual hw link
+ * + 1 channel id), validate và bật cờ đã init. */
 void Adc_Init(const Adc_ConfigType *config) {
     if (config == NULL) {
         (void)Det_ReportError(DET_MODULE_ID_ADC, 0U, ADC_API_ID_INIT, DET_ERR_NULL_POINTER);
@@ -58,10 +63,15 @@ void Adc_Init(const Adc_ConfigType *config) {
     g_initialized = TRUE;
 }
 
+/* Vai trò: tắt module (chỉ hạ cờ init, không xoá config). */
 void Adc_DeInit(void) {
     g_initialized = FALSE;
 }
 
+/* Vai trò: đọc giá trị ADC counts mới nhất — lấy payload text mới nhất từ
+ * VirtualHw (mô phỏng cảm biến vật lý), parse ra số nguyên theo đúng key
+ * "ADCn", trả về NGUYÊN GIÁ TRỊ THÔ, không scale/clamp/diễn giải gì cả
+ * (REQ-MCAL-001 — việc đó thuộc về IoHwAb). */
 Std_ReturnType Adc_ReadGroup(Adc_GroupType group, Adc_ValueGroupType *data_buffer) {
     if (data_buffer == NULL) {
         (void)Det_ReportError(DET_MODULE_ID_ADC, group, ADC_API_ID_READ_GROUP,
@@ -98,6 +108,8 @@ Std_ReturnType Adc_ReadGroup(Adc_GroupType group, Adc_ValueGroupType *data_buffe
     return E_OK;
 }
 
+/* Vai trò: cho biết group đã từng nhận được dữ liệu conversion nào chưa
+ * (ADC_STREAM_CONVERTED) hay vẫn đang chờ (ADC_IDLE). */
 Adc_StatusType Adc_GetGroupStatus(Adc_GroupType group) {
     if (!GroupIsValid(group)) {
         (void)Det_ReportError(DET_MODULE_ID_ADC, group, ADC_API_ID_GET_STATUS,
@@ -113,6 +125,8 @@ Adc_StatusType Adc_GetGroupStatus(Adc_GroupType group) {
     return hasAny ? ADC_STREAM_CONVERTED : ADC_IDLE;
 }
 
+/* Vai trò: trả về tuổi (ms) của mẫu dữ liệu mới nhất — IoHwAb dùng để
+ * đánh giá dữ liệu có "cũ/stale" hay không. */
 Gpt_ValueType Adc_GetGroupAge(Adc_GroupType group) {
     if (!GroupIsValid(group)) {
         (void)Det_ReportError(DET_MODULE_ID_ADC, group, ADC_API_ID_GET_AGE, DET_ERR_INVALID_PARAM);
@@ -129,10 +143,14 @@ Gpt_ValueType Adc_GetGroupAge(Adc_GroupType group) {
     return ageMs;
 }
 
+/* Vai trò: getter — đếm số lần Adc_ReadGroup đọc thành công, phục vụ
+ * test/quan sát (IT-04). */
 uint32 Adc_GetGroupReadCount(Adc_GroupType group) {
     return GroupIsValid(group) ? g_groups[group].readCount : 0U;
 }
 
+/* Vai trò: hàm chạy theo chu kỳ, chủ động kéo VirtualHw đọc datagram mới
+ * nhất từ virtual hw link cho từng group đã cấu hình. */
 void Adc_MainFunction_Read(void) {
     if (!g_initialized) {
         (void)Det_ReportError(DET_MODULE_ID_ADC, 0U, ADC_API_ID_MAIN_FUNCTION_READ, DET_ERR_UNINIT);
