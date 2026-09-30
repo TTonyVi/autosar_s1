@@ -12,6 +12,7 @@
 
 #include <stddef.h>
 
+#include "BswM.h"
 #include "Com.h"
 #include "Dem.h"
 #include "Det.h"
@@ -27,19 +28,11 @@ static const Port_ConfigType g_portConfig = {.reserved = 0U};
 static const Gpt_ChannelConfigType g_gptChannels[1] = {{.channelId = GPT_CHANNEL_TIME_BASE}};
 static const Gpt_ConfigType g_gptConfig = {.channels = g_gptChannels, .numChannels = 1U};
 
-/* ------------------- MCAL: the virtual sensor line -------------------
- * The SensorEcu is the CONSUMER, so it binds (section 15.5.2). The path
- * is a post-build-like value, patched in by SensorEcu_BuildConfig. */
+/* SENSOR_LINK_ID is a legacy grouping id carried in the shared
+ * Adc_GroupConfigType/Dio_ChannelConfigType.virtualHwLinkId field (a plain
+ * uint8, not a VirtualHw type) — the S32K144 drivers read the real
+ * channel/pin instead and ignore it. */
 #define SENSOR_LINK_ID 0U
-
-static VirtualHw_LinkConfigType g_vhwLinks[1] = {{
-    .linkId = SENSOR_LINK_ID,
-    .direction = VIRTUALHW_DIR_RX,
-    .socketPath = NULL, /* patched from the command line */
-    .maxRxPerActivation = 8U,
-    .stalenessTimeoutMs = IOHWAB_INPUT_TIMEOUT_MS,
-}};
-static const VirtualHw_ConfigType g_vhwConfig = {.links = g_vhwLinks, .numLinks = 1U};
 
 /* --------------------- MCAL: the input drivers ----------------------- */
 
@@ -274,7 +267,56 @@ static const Os_TaskConfigType g_osTasks[5] = {
     {"Task_App_10ms", 10U, 2U, Task_App_10ms},    {"Task_BswCom_20ms", 20U, 2U, Task_BswCom_20ms},
     {"Task_App_100ms", 100U, 1U, Task_App_100ms},
 };
-static const Os_ConfigType g_osConfig = {.tasks = g_osTasks, .numTasks = 5U};
+
+/* ----------------------- CanSM & ComM -------------------------------- */
+
+static const CanSM_NetworkConfigType g_canSMNetworks[1] = {
+    {.canControllerId = SENSOR_CAN_CONTROLLER, .networkHandle = COMM_CHANNEL_CAN},
+};
+static const CanSM_ConfigType g_canSMConfig = {
+    .networks = g_canSMNetworks,
+    .numNetworks = 1U,
+};
+
+static const ComM_UserHandleType g_commUsers[1] = {COMM_USER_BSWM};
+static const ComM_ChannelConfigType g_commChannels[1] = {
+    {.channelId = COMM_CHANNEL_CAN, .numUsers = 1U, .users = g_commUsers},
+};
+static const ComM_ConfigType g_commConfig = {
+    .channels = g_commChannels,
+    .numChannels = 1U,
+    .numUsers = 1U,
+};
+
+/* ----------------------- BswM & OS StartupHook ----------------------- */
+
+static const BswM_ConfigType g_bswMConfig = {
+    .adcConfig = &g_adcConfig,
+    .dioConfig = &g_dioConfig,
+    .displayConfig = NULL,
+    .canConfig = &g_canConfig,
+    .ioHwAbConfig = &IoHwAb_ConfigSensor,
+    .canIfConfig = &g_canIfConfig,
+    .canSMConfig = &g_canSMConfig,
+    .pduRConfig = &g_pduRConfig,
+    .comConfig = &g_comConfig,
+    .comMConfig = &g_commConfig,
+    .canControllerId = SENSOR_CAN_CONTROLLER,
+};
+
+static void SensorEcu_StartupHook(void) {
+    EcuM_StartupTwo();
+    if (BswM_Init(&g_bswMConfig) != E_OK) {
+        Logger_Log(LOGGER_LEVEL_ERROR, "SensorEcu", "BswM_Init failed");
+    }
+}
+
+static const Os_ConfigType g_osConfig = {
+    .tasks = g_osTasks,
+    .numTasks = 5U,
+    .startupHook = SensorEcu_StartupHook,
+    .shutdownHook = NULL,
+};
 
 /* --------------------------- assembly -------------------------------- */
 
@@ -292,16 +334,15 @@ const EcuM_ConfigType *SensorEcu_BuildConfig(const EcuM_PostBuildType *postBuild
     }
 
     /* Post-build-like values reach MCAL configuration and stop there. */
-    g_vhwLinks[0].socketPath = postBuild->hwLinkPath;
     g_canControllers[0].interfaceName = postBuild->canInterface;
 
     g_ecuMConfig.ecuName = "SensorEcu";
     g_ecuMConfig.logLevel = postBuild->logLevel;
+    g_ecuMConfig.durationSeconds = postBuild->durationSeconds;
     g_ecuMConfig.mcuConfig = &g_mcuConfig;
     g_ecuMConfig.portConfig = &g_portConfig;
     g_ecuMConfig.sysTimerConfig = &SysTimer_Config;
     g_ecuMConfig.gptConfig = &g_gptConfig;
-    g_ecuMConfig.virtualHwConfig = &g_vhwConfig;
     g_ecuMConfig.adcConfig = &g_adcConfig;
     g_ecuMConfig.dioConfig = &g_dioConfig;
     g_ecuMConfig.displayConfig = NULL; /* the sensor ECU owns no panel */
@@ -311,6 +352,7 @@ const EcuM_ConfigType *SensorEcu_BuildConfig(const EcuM_PostBuildType *postBuild
     g_ecuMConfig.pduRConfig = &g_pduRConfig;
     g_ecuMConfig.comConfig = &g_comConfig;
     g_ecuMConfig.osConfig = &g_osConfig;
+    g_ecuMConfig.bswMConfig = &g_bswMConfig;
     g_ecuMConfig.canControllerId = SENSOR_CAN_CONTROLLER;
     return &g_ecuMConfig;
 }

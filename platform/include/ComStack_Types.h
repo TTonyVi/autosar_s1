@@ -19,6 +19,7 @@
 
 typedef uint16 PduIdType;
 typedef uint16 PduLengthType;
+typedef uint8 NetworkHandleType;
 
 typedef struct {
     uint8 *SduDataPtr;

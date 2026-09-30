@@ -11,6 +11,7 @@
 
 #include <stddef.h>
 
+#include "BswM.h"
 #include "ClusterControlSwc.h"
 #include "Com.h"
 #include "Dem.h"
@@ -26,19 +27,11 @@ static const Port_ConfigType g_portConfig = {.reserved = 0U};
 static const Gpt_ChannelConfigType g_gptChannels[1] = {{.channelId = GPT_CHANNEL_TIME_BASE}};
 static const Gpt_ConfigType g_gptConfig = {.channels = g_gptChannels, .numChannels = 1U};
 
-/* ------------------ MCAL: the virtual display line -------------------
- * The ClusterEcu is the PRODUCER here, so it sends and the HMI binds
- * (section 15.5.2). */
+/* DISPLAY_LINK_ID is a legacy grouping id carried in the shared
+ * Display_ConfigType.virtualHwLinkId field (a plain uint8, not a
+ * VirtualHw type) — Display_S32K144.c drives LPUART1 directly and
+ * ignores it. */
 #define DISPLAY_LINK_ID 0U
-
-static VirtualHw_LinkConfigType g_vhwLinks[1] = {{
-    .linkId = DISPLAY_LINK_ID,
-    .direction = VIRTUALHW_DIR_TX,
-    .socketPath = NULL, /* patched from the command line */
-    .maxRxPerActivation = 0U,
-    .stalenessTimeoutMs = 0U,
-}};
-static const VirtualHw_ConfigType g_vhwConfig = {.links = g_vhwLinks, .numLinks = 1U};
 
 static const Display_ConfigType g_displayConfig = {
     .virtualHwLinkId = DISPLAY_LINK_ID,
@@ -278,17 +271,53 @@ static const Os_TaskConfigType g_osTasks[5] = {
     {"Task_App_10ms", 10U, 2U, Task_App_10ms},    {"Task_BswCom_20ms", 20U, 2U, Task_BswCom_20ms},
     {"Task_App_100ms", 100U, 1U, Task_App_100ms},
 };
-static const Os_ConfigType g_osConfig = {.tasks = g_osTasks, .numTasks = 5U};
+
+/* ----------------------- CanSM & ComM -------------------------------- */
+
+static const CanSM_NetworkConfigType g_canSMNetworks[1] = {
+    {.canControllerId = CLUSTER_CAN_CONTROLLER, .networkHandle = COMM_CHANNEL_CAN},
+};
+static const CanSM_ConfigType g_canSMConfig = {
+    .networks = g_canSMNetworks,
+    .numNetworks = 1U,
+};
+
+static const ComM_UserHandleType g_commUsers[1] = {COMM_USER_BSWM};
+static const ComM_ChannelConfigType g_commChannels[1] = {
+    {.channelId = COMM_CHANNEL_CAN, .numUsers = 1U, .users = g_commUsers},
+};
+static const ComM_ConfigType g_commConfig = {
+    .channels = g_commChannels,
+    .numChannels = 1U,
+    .numUsers = 1U,
+};
+
+/* ----------------------- BswM & OS StartupHook ----------------------- */
+
+static BswM_ConfigType g_bswMConfig;
+
+static void ClusterEcu_StartupHook(void) {
+    EcuM_StartupTwo();
+    if (BswM_Init(&g_bswMConfig) != E_OK) {
+        Logger_Log(LOGGER_LEVEL_ERROR, "ClusterEcu", "BswM_Init failed");
+    }
+}
+
+static const Os_ConfigType g_osConfig = {
+    .tasks = g_osTasks,
+    .numTasks = 5U,
+    .startupHook = ClusterEcu_StartupHook,
+    .shutdownHook = NULL,
+};
 
 /* --------------------------- assembly -------------------------------- */
 
 static EcuM_ConfigType g_ecuMConfig;
 
 /* Vai trò: LẮP RÁP EcuM_ConfigType cho ClusterEcu — giống
- * SensorEcu_BuildConfig nhưng thêm 1 nhánh riêng: nếu `--display-link`
- * rỗng/disabled thì bỏ hẳn virtualHwConfig/displayConfig (NULL) thay vì
- * vá đường dẫn — cluster có thể chạy hoàn toàn không cần panel, chỉ log
- * (section 15.4). */
+ * SensorEcu_BuildConfig nhưng thêm 1 nhánh riêng: nếu hwLinkEnabled là
+ * FALSE thì bỏ hẳn displayConfig (NULL) — cluster có thể chạy hoàn toàn
+ * không cần panel, chỉ log (section 15.4). */
 const EcuM_ConfigType *ClusterEcu_BuildConfig(const EcuM_PostBuildType *postBuild) {
     if ((postBuild == NULL) || (postBuild->canInterface == NULL)) {
         return NULL;
@@ -298,6 +327,7 @@ const EcuM_ConfigType *ClusterEcu_BuildConfig(const EcuM_PostBuildType *postBuil
 
     g_ecuMConfig.ecuName = "ClusterEcu";
     g_ecuMConfig.logLevel = postBuild->logLevel;
+    g_ecuMConfig.durationSeconds = postBuild->durationSeconds;
     g_ecuMConfig.mcuConfig = &g_mcuConfig;
     g_ecuMConfig.portConfig = &g_portConfig;
     g_ecuMConfig.sysTimerConfig = &SysTimer_Config;
@@ -312,15 +342,23 @@ const EcuM_ConfigType *ClusterEcu_BuildConfig(const EcuM_PostBuildType *postBuil
     g_ecuMConfig.osConfig = &g_osConfig;
     g_ecuMConfig.canControllerId = CLUSTER_CAN_CONTROLLER;
 
-    /* Section 15.4: `--display-link ""` disables the display driver and the
-     * ECU logs only. With no driver there is no link to open either. */
-    if (postBuild->hwLinkEnabled && (postBuild->hwLinkPath != NULL)) {
-        g_vhwLinks[0].socketPath = postBuild->hwLinkPath;
-        g_ecuMConfig.virtualHwConfig = &g_vhwConfig;
-        g_ecuMConfig.displayConfig = &g_displayConfig;
-    } else {
-        g_ecuMConfig.virtualHwConfig = NULL;
-        g_ecuMConfig.displayConfig = NULL;
-    }
+    /* Section 15.4: hwLinkEnabled == FALSE disables the display driver and
+     * the ECU logs only. */
+    g_ecuMConfig.displayConfig = postBuild->hwLinkEnabled ? &g_displayConfig : NULL;
+
+    /* Assemble BswM configuration */
+    g_bswMConfig.adcConfig = NULL;
+    g_bswMConfig.dioConfig = NULL;
+    g_bswMConfig.displayConfig = g_ecuMConfig.displayConfig;
+    g_bswMConfig.canConfig = &g_canConfig;
+    g_bswMConfig.ioHwAbConfig = &IoHwAb_ConfigCluster;
+    g_bswMConfig.canIfConfig = &g_canIfConfig;
+    g_bswMConfig.canSMConfig = &g_canSMConfig;
+    g_bswMConfig.pduRConfig = &g_pduRConfig;
+    g_bswMConfig.comConfig = &g_comConfig;
+    g_bswMConfig.comMConfig = &g_commConfig;
+    g_bswMConfig.canControllerId = CLUSTER_CAN_CONTROLLER;
+
+    g_ecuMConfig.bswMConfig = &g_bswMConfig;
     return &g_ecuMConfig;
 }

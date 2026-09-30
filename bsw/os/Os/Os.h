@@ -32,6 +32,16 @@
 #include "Platform_Types.h"
 #include "Std_Types.h"
 
+typedef uint8 AppModeType;
+#define OSDEFAULTAPPMODE ((AppModeType)0U)
+
+typedef uint8 StatusType;
+#ifndef E_OK
+#define E_OK         ((StatusType)0U)
+#endif
+#define E_OS_ACCESS  ((StatusType)1U)
+#define E_OS_STATE   ((StatusType)2U)
+
 typedef void (*Os_TaskFuncType)(void);
 
 typedef struct {
@@ -41,9 +51,14 @@ typedef struct {
     Os_TaskFuncType callback;
 } Os_TaskConfigType;
 
+typedef void (*Os_HookFuncType)(void);
+typedef void (*Os_ShutdownHookFuncType)(StatusType Error);
+
 typedef struct {
     const Os_TaskConfigType *tasks;
     uint8 numTasks;
+    Os_HookFuncType startupHook;
+    Os_ShutdownHookFuncType shutdownHook;
 } Os_ConfigType;
 
 typedef struct {
@@ -59,6 +74,23 @@ typedef struct {
 #define OS_MAX_TASKS ((uint8)8U)
 
 Std_ReturnType Os_Init(const Os_ConfigType *config);
+
+/**
+ * @brief Starts the Operating System (AUTOSAR/OSEK standard).
+ *
+ * Executes the StartupHook, then enters the active scheduling loop.
+ * In compliance with AUTOSAR specification, this function does NOT return
+ * under normal operating conditions.
+ */
+void StartOS(AppModeType Mode);
+
+/**
+ * @brief Shuts down the Operating System (AUTOSAR/OSEK standard).
+ *
+ * Executes the ShutdownHook, shuts down EcuM, and terminates or halts.
+ */
+void ShutdownOS(StatusType Error);
+
 void Os_DeInit(void);
 
 /** Runs exactly one scheduling pass: checks all tasks against the current

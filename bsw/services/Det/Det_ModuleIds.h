@@ -32,9 +32,12 @@ typedef uint16 Det_ModuleIdType;
 #define DET_MODULE_ID_IOHWAB ((Det_ModuleIdType)15U)
 #define DET_MODULE_ID_RTE ((Det_ModuleIdType)16U)
 #define DET_MODULE_ID_ECUM ((Det_ModuleIdType)17U)
-/* 18+ reserved for modules later phases may add. */
+#define DET_MODULE_ID_BSWM ((Det_ModuleIdType)18U)
+#define DET_MODULE_ID_CANSM ((Det_ModuleIdType)19U)
+#define DET_MODULE_ID_COMM ((Det_ModuleIdType)20U)
+/* 21+ reserved for modules later phases may add. */
 
 /** Bound on the per-module counter table in Det.c; keep >= the highest ID above. */
-#define DET_MAX_MODULE_ID ((Det_ModuleIdType)20U)
+#define DET_MAX_MODULE_ID ((Det_ModuleIdType)25U)
 
 #endif /* DET_MODULE_IDS_H */

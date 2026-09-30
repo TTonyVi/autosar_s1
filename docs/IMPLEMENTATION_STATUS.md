@@ -1,21 +1,34 @@
 # Implementation status
 
-Tracks progress against the phase plan in `AUTOSAR_CLASSIC_PROJECT_SPEC_v1.1.md`,
-section 16. Updated at the end of every phase, per the spec's own
-instruction (section 0.2, item 4).
+> **v3.0 note:** this tree pivoted to S32K144-hardware-only (spec
+> `AUTOSAR_CLASSIC_PROJECT_SPEC_v3.0.md`). Phases 0-9 below describe how
+> the code was originally built and verified — against the Ubuntu
+> simulation, which is now frozen, unchanged, in `legacy-sim/` (its own
+> copy of this file has the same Phase 0-9 history and is still accurate
+> for that snapshot). This copy's Phase 0-9 rows are kept as an honest
+> history of how the BSW/RTE/ASW logic now running on real hardware was
+> actually developed and tested — not a claim that it has been re-tested
+> since. See the new **Phase 10** entry and section below for the pivot
+> itself.
+
+Tracks progress against the phase plan in `AUTOSAR_CLASSIC_PROJECT_SPEC_v1.1.md`
+(Phases 0-9, historical) and `AUTOSAR_CLASSIC_PROJECT_SPEC_v3.0.md` (Phase
+10 on). Updated at the end of every phase, per the spec's own instruction.
 
 | Phase | Title | Status | Notes |
 |---:|---|---|---|
-| 0 | Repository and documentation baseline | **Done** | See below. |
-| 1 | Base MCAL, services, time, and scheduler | **Done** | See below. |
-| 2 | Virtual hardware links and input/output MCAL | **Done** | See below. |
-| 3 | Can Driver and CanIf | **Done** | See below. |
-| 4 | PduR and COM | **Done** | See below. |
-| 4.5 | SysTimer / Os_Counter split | **Done** | Not a spec phase; see below. |
-| 5 | IoHwAb, RTE, and SW-Cs | **Done** | See below. |
-| 6 | EcuM and complete ECU integration | **Done** | See below. |
-| 7 | Tkinter HMI and scenario player | **Done** | See below. |
-| 8 | Robustness and handoff | **Done** | See below. |
+| 0 | Repository and documentation baseline | **Done** (legacy-sim) | See below. |
+| 1 | Base MCAL, services, time, and scheduler | **Done** (legacy-sim) | See below. |
+| 2 | Virtual hardware links and input/output MCAL | **Done** (legacy-sim) | See below. |
+| 3 | Can Driver and CanIf | **Done** (legacy-sim) | See below. |
+| 4 | PduR and COM | **Done** (legacy-sim) | See below. |
+| 4.5 | SysTimer / Os_Counter split | **Done** (legacy-sim) | Not a spec phase; see below. |
+| 5 | IoHwAb, RTE, and SW-Cs | **Done** (legacy-sim) | See below. |
+| 6 | EcuM and complete ECU integration | **Done** (legacy-sim) | See below. |
+| 7 | Tkinter HMI and scenario player | **Done** (legacy-sim only — removed from this tree in Phase 10) | See below. |
+| 8 | Robustness and handoff | **Done** (legacy-sim) | See below. |
+| 9 | BSW mode management (`BswM`/`ComM`/`CanSM`) and S32K144 hardware port | **Delivered, known issues open** | Modules and MCAL delivered; several `REQ-*` added for this phase are still not met by the code — see below. |
+| 10 | Hardware-only pivot (v3.0) | **Structurally done, unverified** | Ubuntu simulation moved to `legacy-sim/`; `Display_S32K144.c` and `ecu/ClusterEcu/main.c` added; `CMakeLists.txt` simplified. Not yet compiled with a real cross toolchain or flashed to hardware. See below. |
 
 ## Phase 0 — delivered
 
@@ -833,15 +846,131 @@ order revised accordingly.
   across every `.c`/`.h` touched this phase; every spec `REQ-*` id has a
   traceability row.
 
+## Phase 9 — delivered, with known open issues (v2.0)
+
+- `bsw/services/BswM/{BswM.h,BswM.c}`: startup/shutdown action lists and
+  mode arbitration per spec section 9.4, triggered from `EcuM`.
+- `bsw/services/ComM/{ComM.h,ComM.c}`: communication-mode users and
+  arbitrated channel mode.
+- `bsw/communication/CanSM/{CanSM.h,CanSM.c}`: per-channel CAN state
+  machine translating a `ComM` mode into `CanIf` controller-mode calls.
+- `bsw/mcal/{Mcu,Port,Gpt,SysTimer,Adc,Dio,Can}/*_S32K144.c` and
+  `platform/s32k144/`: register-level MCAL for the NXP S32K144, selected
+  via the new `cmake/s32k144_toolchain.cmake` and
+  `-DAUTOSAR_MCAL_VARIANT=s32k144`.
+- `tests/unit/{test_bswm.c,test_comm.c,test_cansm.c,test_os_lifecycle.c}`.
+
+### Known deviations from this phase's own `REQ-*` (found by code review, not yet fixed)
+
+Unlike earlier phases, this phase's code does **not** yet satisfy every
+requirement it introduces. Listed here rather than silently marked done,
+per the project's own documented-deviation convention:
+
+- `REQ-BSWM-001` violated: `BswM_ActionList_Shutdown` never calls
+  `Adc_DeInit`/`Dio_DeInit`/`Display_DeInit`, unlike the driver init calls
+  its startup counterpart makes.
+- `REQ-BSWM-002` violated: `BswM_Init` sets `g_state = BSWM_STATE_SHUTDOWN`
+  on every failure branch, so `BswM_DeInit`'s "already shut down" guard
+  treats a failed partial init as needing no cleanup.
+- `REQ-ECUM-007` violated: `EcuM_StartupTwo` sets
+  `g_state = ECUM_STATE_RUN` before `BswM_Init` is even called by its
+  caller; nothing reverts it if `BswM_Init` later fails.
+- `REQ-ARCH-015` violated: `Os.c`'s `StartOS` reads `BswM_GetState()`
+  directly.
+- `REQ-ARCH-016` violated: `CMakeLists.txt` still adds
+  `sensor_ecu`/`cluster_ecu`/the unit test targets unconditionally, so a
+  `-DAUTOSAR_MCAL_VARIANT=s32k144` configure attempts to cross-compile the
+  POSIX-dependent test targets.
+- `REQ-COMM-001` violated: `ComM_ModeType` and its `COMM_*` literals are
+  independently redefined in both `CanSM.h` and `ComM.h` instead of once
+  in `ComStack_Types.h`.
+- Additional MCAL-level findings outside this phase's own `REQ-*` wording
+  but relevant to hardware-port correctness: `Mcu_Hw_InitClocks` and
+  `FlexCAN0_Hw_Init` spin on hardware status bits with no timeout after the
+  watchdog is already disabled; `Gpt_GetTimeElapsed` discards the
+  sub-millisecond tick remainder every call; `Adc_ReadGroup` does not
+  validate its `group` argument (unlike the host `Adc.c` and the sibling
+  `Dio_S32K144.c`).
+
+Phase 9 exit criteria (spec section 16) are **not** met until these are
+fixed and the corresponding tests are extended to cover them.
+
+## Phase 10 — hardware-only pivot (v3.0), structurally done, unverified
+
+Delivered (this restructuring):
+
+- `legacy-sim/`: a full, unmodified copy of the repository as it stood at
+  the end of Phase 9, including its own `CMakeLists.txt`,
+  `AUTOSAR_CLASSIC_PROJECT_SPEC_v1.1.md`, and the complete 26-test suite —
+  standalone and still buildable/testable on Ubuntu independent of
+  anything below.
+- Removed from the main tree: `bsw/mcal/{Mcu,Port,Gpt,SysTimer,Adc,Dio,
+  Can}.c` (the Ubuntu host implementations), `bsw/mcal/Can/Can_Stub.c`,
+  the entire `bsw/mcal/VirtualHw/` directory, `bsw/mcal/Display/Display.c`,
+  `tools/hmi/`, `tools/{setup_vcan.sh,run_demo.sh,inspect_can.sh}`,
+  `scenarios/`, `tests/` (unit, fixtures, and integration all removed),
+  and both ECUs' POSIX `main.c` entry points.
+- Added: `bsw/mcal/Display/Display_S32K144.c` (new LPUART1 register block
+  in `platform/s32k144/S32K144.h`, blocking-TX text output, same
+  `Display.h` contract and throttling behavior as the retired host
+  driver); `ecu/ClusterEcu/main.c`, a new bare-metal entry point mirroring
+  `ecu/SensorEcu/main.c`'s existing pattern (`ClusterEcu` had none
+  before).
+- Removed the `VirtualHw_ConfigType`/`VirtualHw_Init`/`VirtualHw_DeInit`
+  dependency from `BswM_ConfigType`/`EcuM_ConfigType` and `BswM.c`'s
+  action lists, and from both ECUs' `*_Cfg.c` — real hardware has no
+  "virtual hardware link" to bring up. `Adc`/`Dio`/`Display` config
+  structs still carry a vestigial `virtualHwLinkId` field (a plain
+  `uint8`); the S32K144 drivers ignore it. Left as-is rather than
+  editing the shared `Adc.h`/`Dio.h`/`Display.h` headers, which was out
+  of scope for this pass.
+- Simplified `CMakeLists.txt`: removed the `AUTOSAR_MCAL_VARIANT`
+  real/stub/s32k144 cache-variable switch (only one variant exists now),
+  removed every `test_*` target and the integration-test `foreach` loop,
+  removed `enable_testing()`, and added a `.hex`/`.bin` post-build step
+  per ECU executable via `CMAKE_OBJCOPY`.
+- Rewrote `AUTOSAR_CLASSIC_PROJECT_SPEC_v3.0.md`, `README.md`,
+  `docs/ARCHITECTURE.md`/`.html`, this file, `docs/REQUIREMENTS_TRACEABILITY.md`,
+  and `docs/TEST_PLAN.md` for the hardware-only reality, each pointing at
+  `legacy-sim/` for the frozen historical record rather than duplicating
+  it.
+
+**Not done / not verified, and explicitly flagged rather than silently
+assumed:**
+
+- **No build was run.** No `arm-none-eabi-gcc` toolchain or `cmake` was
+  available in the environment this restructuring was done in, so none of
+  the new or modified C files (`Display_S32K144.c`,
+  `ecu/ClusterEcu/main.c`, the edited `BswM.c`/`BswM.h`/`EcuM.h`/both
+  `*_Cfg.c` files, the rewritten `CMakeLists.txt`) has been compiled, let
+  alone linked or flashed. Verification was limited to careful manual
+  review and repository-wide `grep` for leftover references to removed
+  files/symbols (see the commands in the spec's section "Verification").
+  **Run the real build before trusting this pivot.**
+- No physical hardware bring-up (spec section 14) has been performed.
+- The register addresses/pin assignments chosen for the new
+  `Display_S32K144.c` (LPUART1 on PTC6/PTC7, PCC index 43, SOSCDIV2
+  clock source, OSR=16/SBR=26 for ~9615 baud) are based on the S32K144
+  reference manual's documented values and this project's own existing
+  `Gpt_S32K144.c`/`Port_S32K144.c` conventions, but have not been checked
+  against a datasheet by a second reviewer or verified against real
+  silicon. Double-check before relying on them.
+- The six Phase 9 issues above are unchanged by this pivot — still open,
+  and now more consequential since no test suite remains to catch a
+  regression in them.
+
 ## Not yet implemented
 
-Nothing required by `AUTOSAR_CLASSIC_PROJECT_SPEC_v1.1.md`'s section 16
-phase plan remains. Section 17's Definition of Done is reviewed item by
-item in `docs/REQUIREMENTS_TRACEABILITY.md`'s closing note and in the
-final chat summary delivered alongside this phase's completion — a small
-number of DoD items are met with a documented, explained deviation (the
-GCC-only build convention adopted mid-project, per user direction, in
-place of "build with GCC and Clang"; and the two REQ-ARCH-009 socket-path
-literals in `ecu/<Ecu>/main.c`'s argument defaults) rather than a literal
+Phases 0-8 (v1) and the module/driver delivery of Phase 9 (v2.0) are done
+against the Ubuntu simulation, frozen in `legacy-sim/`. Phase 9's own
+`REQ-*` violations (above) are still open. Phase 10 (v3.0, this
+restructuring) is structurally complete but has not been build- or
+hardware-verified (above) — do not treat it as working until it has been.
+Section 17's Definition of Done is reviewed item by item in
+`docs/REQUIREMENTS_TRACEABILITY.md`'s closing note; a small number of DoD
+items are met with a documented, explained deviation (the GCC-only build
+convention adopted mid-project for the Ubuntu simulation, per user
+direction; and the two REQ-ARCH-009 socket-path literals in
+`legacy-sim/ecu/<Ecu>/main.c`'s argument defaults) rather than a literal
 word-for-word match, and are called out explicitly rather than silently
 marked done.

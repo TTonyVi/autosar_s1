@@ -1,10 +1,10 @@
-# Simplified AUTOSAR Classic Vehicle Speed Monitor
+# Simplified AUTOSAR Classic Vehicle Speed Monitor (S32K144 hardware build)
 
 ## What this is
 
 An educational, AUTOSAR-Classic-**inspired** implementation of a two-ECU
-vehicle speed/cluster demo running on Ubuntu, driven by a Tkinter HMI that
-plays the role of the vehicle hardware. It reproduces the main
+vehicle speed/cluster system running as real firmware on two NXP S32K144
+boards, communicating over a real CAN bus. It reproduces the main
 architectural boundaries, data flow, naming style, static configuration
 approach, and development discipline of AUTOSAR Classic Platform.
 
@@ -12,145 +12,100 @@ approach, and development discipline of AUTOSAR Classic Platform.
 licensed BSW stack, and does not pretend that its hand-written
 configuration is schema-compliant ARXML. No document in this repository
 claims production AUTOSAR or ISO 26262 compliance. See
-`AUTOSAR_CLASSIC_PROJECT_SPEC_v1.1.md` for the full specification this
-repository implements, including every `REQ-*` requirement and the phase
-plan.
+`AUTOSAR_CLASSIC_PROJECT_SPEC_v3.0.md` for the full specification this
+repository implements, including every `REQ-*` requirement.
+
+**This tree is hardware-only and has no automated tests.** The project
+started as an Ubuntu host simulation (two processes, a virtual CAN
+interface, a Tkinter HMI, and a 26-test suite) — that version is frozen
+and still fully working, standalone, under [`legacy-sim/`](legacy-sim/).
+This tree replaced that simulation with real S32K144 firmware; see
+section 14 of the v3.0 spec for how it's verified instead (flashing real
+hardware, not `ctest`).
 
 ## Architecture in one paragraph
 
-Two single-threaded ECU processes (`sensor_ecu`, `cluster_ecu`) run a
-simplified Classic Platform stack — Application SW-Cs, a generated-style
-RTE, simplified `Com`/`PduR`/`CanIf`, a simplified MCAL (`Mcu`, `Port`,
-`Gpt`, `Adc`, `Dio`, `Can`, `Display`), and an `IoHwAb` ECU Abstraction
-layer — communicating over `vcan0` with Classic CAN frames. Sensor input
-(wheel speed, ignition) enters only through a virtual hardware link at the
-bottom of the stack, never invented inside the ECU. A third process, the
-Tkinter HMI (`tools/hmi/vehicle_hmi.py`), plays the role of the vehicle's
-physical sensors and instrument panel; it is test equipment, not part of
-the ECU software. See `docs/ARCHITECTURE.md` for the full layer diagram and
-ownership table.
+Two independent S32K144 firmware images (`sensor_ecu`, `cluster_ecu`) run
+a simplified Classic Platform stack — Application SW-Cs, a generated-style
+RTE, simplified `Com`/`PduR`/`CanIf`, BSW mode management
+(`BswM`/`ComM`/`CanSM`), a register-level MCAL (`Mcu`, `Port`, `Gpt`,
+`Adc`, `Dio`, `Can`, `Display`), and an `IoHwAb` ECU Abstraction layer —
+communicating over a real CAN bus with Classic CAN frames. `SensorEcu`
+reads a real wheel-speed sensor (ADC) and ignition line (DIO); `ClusterEcu`
+renders its state as text over LPUART1, viewable in any serial terminal.
+See `docs/ARCHITECTURE.md` for the full layer diagram and ownership table.
 
 ## Status
 
-This repository was built phase-by-phase per section 16 of the
-specification. See `docs/IMPLEMENTATION_STATUS.md` for the full
-phase-by-phase record; **all 8 phases (plus the between-4-and-5
-SysTimer/Os_Counter split) are complete**: both ECU executables run their
-full lifecycle over real `vcan0`, all section 14.1 unit tests and all
-seven section 14.2 integration tests (IT-01 through IT-07) pass, the
-project builds and passes its full test suite under AddressSanitizer and
-UndefinedBehaviorSanitizer with zero diagnostics, and `REQ-ARCH-012`'s
-stub-MCAL build is verified. `docs/REQUIREMENTS_TRACEABILITY.md` covers
-every `REQ-*` requirement in the specification.
+**Hardware-only pivot (v3.0), just landed, not yet build- or
+hardware-verified in this environment** (no `arm-none-eabi-gcc` toolchain
+or physical board was available to verify against while making this
+change — see `docs/IMPLEMENTATION_STATUS.md`). Before treating this as
+working:
 
-## Ubuntu prerequisites
+1. Build with the real toolchain (see "Build" below) and fix anything that
+   doesn't compile.
+2. Flash both boards and run the bring-up checklist in the spec's section 14.
+3. Fix the known-open correctness issues carried over from before this
+   pivot — see `docs/IMPLEMENTATION_STATUS.md`'s Phase 9 section
+   (`BswM` shutdown action list not deinitializing drivers, `BswM_DeInit`
+   no-op after a failed init, `EcuM_StartupTwo` claiming `RUN` before
+   `BswM_Init` succeeds, `Os.c` reaching into `BswM` directly,
+   `ComM_ModeType` defined twice, plus a few MCAL-level findings). These
+   matter more now than before, since there is no test suite left to catch
+   a regression.
 
-Targets Ubuntu 22.04 LTS or 24.04 LTS, x86_64. No other distribution is
-claimed or tested. (Developed and verified on Ubuntu 20.04 with GCC 9.4.0;
-`clang` is optional — this project builds and tests with GCC only.)
+Everything through v2.0 (the module split and the register-level MCAL
+itself) was implemented and verified against the Ubuntu simulation, which
+remains true and unchanged in `legacy-sim/`.
 
-```bash
-sudo apt update
-sudo apt install -y build-essential cmake git can-utils python3 python3-tk
-```
+## Build
 
-`python3-tk` is required for the HMI; on a minimal/server install or
-container, `import tkinter` fails without it.
-
-### Virtual CAN interface
-
-```bash
-./tools/setup_vcan.sh
-```
-
-This idempotently loads the `vcan` kernel module, creates `vcan0` if
-missing, and brings it up; it is safe to re-run. `vcan` is a kernel module,
-so inside a container you need `--cap-add=NET_ADMIN` (or an already-up
-`vcan0` provided by the host).
-
-## Build and test
+Requires an `arm-none-eabi-gcc` cross toolchain on `PATH` (not provided by
+this repository).
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=cmake/s32k144_toolchain.cmake
 cmake --build build --parallel
-ctest --test-dir build --output-on-failure -LE integration   # fast: unit tests only
-ctest --test-dir build --output-on-failure -L integration    # slower: real ECU subprocesses
 ```
 
-`test_can` and every integration test (`IT-*`) open a real socket on
-`vcan0` and require the "Virtual CAN interface" step above to have run
-first; every other unit test target has no such prerequisite. A bare
-`ctest` (no `-L`/`-LE` filter) runs everything.
+Produces `build/sensor_ecu(.elf)` / `build/cluster_ecu(.elf)`, plus
+post-build `.hex` and `.bin` artifacts next to each. There is no
+`ctest` target in this tree.
 
-Two additional, optional verification builds exist alongside the normal
-one (see `docs/TEST_PLAN.md` for full commands): a sanitizer build
-(`-fsanitize=address,undefined`) and a `REQ-ARCH-012` stub-MCAL build
-(`-DAUTOSAR_MCAL_VARIANT=stub`, swapping only the two files that touch a
-real socket for in-memory-buffer equivalents, proving a microcontroller
-MCAL port would need no change outside `bsw/mcal/`).
+## Flash and run
 
-## Run
+Flashing is left to your own toolchain (J-Link Commander, OpenOCD,
+PEmicro, or an IDE's flash action against the `.hex`/`.elf`) — this
+project doesn't mandate one. After flashing both boards:
 
-Three processes, any order — the system is designed to tolerate any of
-them starting, stopping, or restarting independently:
+1. Wire a real CAN bus (CAN-H/CAN-L + termination) between the two
+   boards' FlexCAN0 pins.
+2. Wire a wheel-speed signal (or bench voltage source) into `SensorEcu`'s
+   ADC0 pin and an ignition signal into its DIO pin.
+3. Connect `ClusterEcu`'s LPUART1 (PTC6/PTC7 — the S32K144-EVB's OpenSDA
+   USB-serial port) to a PC and open a serial terminal at ~9600 baud.
 
-```bash
-./build/cluster_ecu --can-if vcan0 --display-link /tmp/vhw_cluster_display.sock
-./build/sensor_ecu  --can-if vcan0 --sensor-link  /tmp/vhw_sensor.sock
-python3 tools/hmi/vehicle_hmi.py
-```
-
-Or let `tools/run_demo.sh` start all three (a convenience, never a
-requirement — each executable stays fully usable on its own):
-
-```bash
-bash tools/run_demo.sh                 # HMI demo, needs a display
-bash tools/run_demo.sh --headless      # scenario_player instead of the GUI
-```
-
-For a headless/CI run without a display, `tools/hmi/scenario_player.py`
-replays a deterministic CSV scenario (`scenarios/default.csv`,
-`scenarios/timeout_recovery.csv`) onto the sensor line in place of the GUI:
-
-```bash
-python3 tools/hmi/scenario_player.py --scenario scenarios/default.csv \
-    --link /tmp/vhw_sensor.sock
-```
-
-To watch the raw bus independently of either ECU's own logs:
-
-```bash
-bash tools/inspect_can.sh vcan0   # candump if installed, else the project's own decoder
-```
-
-`tools/hmi/hw_link.py` sends one manual datagram onto either virtual
-hardware link, useful for poking a single value without the GUI or a full
-scenario:
-
-```bash
-python3 tools/hmi/hw_link.py --link /tmp/vhw_sensor.sock --speed 120.0 --ignition on
-```
+See the v3.0 spec's section 14 for the full bring-up checklist (normal
+exchange, overspeed hysteresis, timeout/recovery, sensor-line loss).
 
 ## Repository layout
 
-See section 12 of `AUTOSAR_CLASSIC_PROJECT_SPEC_v1.1.md` for the full
+See section 12 of `AUTOSAR_CLASSIC_PROJECT_SPEC_v3.0.md` for the full
 rationale. Short version:
 
 | Directory | Contents |
 |---|---|
-| `platform/` | Fixed-width base types shared by every layer |
-| `bsw/services/` | `Det`, `Dem`, `Logger`, `EcuM` |
+| `platform/` | Fixed-width base types shared by every layer; `platform/s32k144/` holds the linker script, startup code, and register headers |
+| `bsw/services/` | `Det`, `Dem`, `Logger`, `EcuM`, `BswM`, `ComM` |
 | `bsw/os/` | `Os` (the scheduler) and `Os_Counter` (the OS's own tick-derived counter, reads only `SysTimer`, never `Gpt`) |
-| `bsw/communication/` | `Com`, `PduR`, `CanIf` |
+| `bsw/communication/` | `Com`, `PduR`, `CanIf`, `CanSM` |
 | `bsw/ecu_abstraction/` | `IoHwAb` |
-| `bsw/mcal/` | `Mcu`, `Port`, `Gpt`, `SysTimer`, `Adc`, `Dio`, `Display`, `Can`, `VirtualHw` — the **only** directory allowed to contain host-specific code (sockets, `clock_gettime`); also holds the `Can_Stub.c`/`VirtualHw_Stub.c` `REQ-ARCH-012` proof variant |
+| `bsw/mcal/` | `Mcu`, `Port`, `Gpt`, `SysTimer`, `Adc`, `Dio`, `Display`, `Can` — each a `.h` interface plus one `_S32K144.c` register-level implementation; the only directory allowed to touch a peripheral register |
 | `asw/` | Application SW-Cs |
 | `rte/` | Generated-style, ECU-specific RTE code |
-| `ecu/` | The two ECU `main()` entry points and their static configuration |
-| `tests/unit/`, `tests/fixtures/` | Unit tests and their test doubles |
-| `tests/integration/` | The seven `IT-*` end-to-end tests, driving real ECU subprocesses |
-| `tools/hmi/` | The Tkinter HMI, headless scenario player, and CAN trace tool (Python, standard library only, never linked into an ECU) |
-| `scenarios/` | CSV scenario files for the headless player |
+| `ecu/` | The two ECUs' bare-metal `main.c` entry points and their static configuration |
+| `legacy-sim/` | Frozen Ubuntu-simulation snapshot (own `CMakeLists.txt`, own spec, own 26-test suite) — see `legacy-sim/README.md` |
 
 ## Non-conformance disclaimer
 

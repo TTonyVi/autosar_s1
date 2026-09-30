@@ -1,10 +1,25 @@
 # Requirements traceability
 
-Every `REQ-*` requirement in `AUTOSAR_CLASSIC_PROJECT_SPEC_v1.1.md` must
-have at least one design/code link and one test or justified inspection
-method (spec section 14.4). This table is populated as each phase (section
-16) implements the requirements it owns; it is intentionally empty of rows
-in Phase 0 since no `REQ-*`-bearing module exists yet.
+> **v3.0 note:** this tree is now S32K144-hardware-only and has no
+> automated tests (`AUTOSAR_CLASSIC_PROJECT_SPEC_v3.0.md`, section 14).
+> Every `test_*`/`IT-*` name cited as a "Test case" below refers to a test
+> that no longer exists in this tree — it exists only in `legacy-sim/`,
+> which still builds and passes it unmodified. Those citations are kept
+> as an honest historical record of how each requirement was verified
+> when the BSW/RTE/ASW logic now running on this hardware was originally
+> built, not a claim that the citation is runnable here today. Going
+> forward, verification of any `REQ-*` below is by the manual hardware
+> bring-up checklist in the v3.0 spec's section 14, not by `ctest`. New
+> rows added for Phase 9/10 (below) reflect this directly instead of
+> citing a retired test.
+
+Every `REQ-*` requirement in `AUTOSAR_CLASSIC_PROJECT_SPEC_v1.1.md`
+(Phases 0-9, historical, reproduced unchanged in `legacy-sim/`) or
+`AUTOSAR_CLASSIC_PROJECT_SPEC_v3.0.md` (Phase 10 on) must have at least
+one design/code link and one test or justified inspection method. This
+table is populated as each phase implements the requirements it owns; it
+is intentionally empty of rows in Phase 0 since no `REQ-*`-bearing module
+existed yet.
 
 | Requirement | Design/code files | Test case | Status |
 |---|---|---|---|
@@ -140,6 +155,28 @@ inspection for the timeout pair (the same function, same call site,
 covered by `test_it02_timeout_recovery`'s COMM_FAULT assertion, though
 that test does not itself grep the DEM log line the way IT-03 does).
 
+## Phase 9 — BSW mode management and S32K144 hardware port (v2.0)
+
+Unlike every phase above, this phase's own tests do **not** yet cover the
+failure modes its `REQ-*` ids exist to prevent — the code review that
+found each violation below is the only current evidence for most rows.
+`test_bswm`/`test_comm`/`test_cansm`/`test_os_lifecycle` exist and pass,
+but exercise only the happy path and basic init/DeInit/reject-before-init
+cases; none of them assert the specific behavior each violated
+requirement demands. `Status` uses a fourth value, `Implemented, violates
+requirement`, for exactly this: code and a REQ-* both exist, but the code
+does not satisfy it.
+
+| Requirement | Design/code files | Test case | Status |
+|---|---|---|---|
+| `REQ-ARCH-015` | `bsw/os/Os/Os.c` (`StartOS`) | none — `test_os_lifecycle` does not check for a `BswM` reference | **Implemented, violates requirement** — `StartOS` calls `BswM_GetState()` directly; see `docs/IMPLEMENTATION_STATUS.md` Phase 9 |
+| `REQ-ARCH-016` | `CMakeLists.txt` | none | Implemented & trivially satisfied as of v3.0 (Phase 10) — the `AUTOSAR_MCAL_VARIANT` switch and every `test_*` target were removed from this tree, so there is no POSIX-dependent target left that could be pulled in; the requirement's original failure mode can no longer occur here. (Still an open finding in `legacy-sim/`'s own copy of this table, where the variant switch and tests still coexist.) |
+| `REQ-BSWM-001` | `bsw/services/BswM/BswM.c` (`BswM_ActionList_Shutdown`) | none — `test_bswm` does not call `BswM_ActionList_Shutdown` and assert driver DeInit | **Implemented, violates requirement** — shutdown action list never calls `Adc_DeInit`/`Dio_DeInit`/`Display_DeInit` |
+| `REQ-BSWM-002` | `bsw/services/BswM/BswM.c` (`BswM_Init`, `BswM_DeInit`) | none — `test_bswm` only covers `BswM_Init(NULL)`, not a failure after partial init | **Implemented, violates requirement** — `BswM_Init` sets `BSWM_STATE_SHUTDOWN` on every failure branch, so `BswM_DeInit`'s guard treats a failed partial init as already clean |
+| `REQ-COMM-001` | `bsw/communication/CanSM/CanSM.h`, `bsw/services/ComM/ComM.h` | none | **Implemented, violates requirement** — `ComM_ModeType` and its `COMM_*` literals are defined independently in both headers, not once in `ComStack_Types.h` |
+| `REQ-CANSM-001` | `bsw/communication/CanSM/CanSM.c` | `test_cansm` (covers the happy-path mode-to-controller-state mapping, not the "only CanSM calls CanIf's controller-mode API" constraint itself) | Implemented, test pending |
+| `REQ-ECUM-007` | `bsw/services/EcuM/EcuM.c` (`EcuM_StartupTwo`) | none — no test drives a `BswM_Init` failure through `EcuM_StartupTwo` | **Implemented, violates requirement** — `g_state = ECUM_STATE_RUN` is set before the caller even invokes `BswM_Init`, and nothing reverts it on failure |
+
 ## How to extend this table
 
 When a phase implements a requirement:
@@ -154,4 +191,6 @@ When a phase implements a requirement:
    requirement with no automated test needs an explicit justification in
    this column (e.g. "manual inspection: <reason>"), not a blank cell.
 4. `Status` is one of: `Implemented & tested`, `Implemented, test pending`,
-   `Not started`.
+   `Implemented, violates requirement` (code and the requirement both
+   exist, but the code does not satisfy it — explain how in the same
+   cell), `Not started`.

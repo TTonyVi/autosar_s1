@@ -1,10 +1,56 @@
 # Test plan
 
-Source of truth for test scope is `AUTOSAR_CLASSIC_PROJECT_SPEC_v1.1.md`,
-section 14. This document tracks what's actually implemented against that
-plan; it does not restate the full spec.
+> **v3.0 note: this tree has no automated tests.** `AUTOSAR_MCAL_VARIANT`
+> and every `test_*`/`IT-*` target were removed from `CMakeLists.txt` in
+> the hardware-only pivot (`AUTOSAR_CLASSIC_PROJECT_SPEC_v3.0.md`, section
+> 0.3/14) — `bsw_mcal` now contains real S32K144 register accesses, which
+> segfault a host process. Verification going forward is the **hardware
+> bring-up checklist** below (mirrors the v3.0 spec's section 14
+> verbatim). Everything under "Historical: Ubuntu-simulation test plan"
+> further down describes the 26-test suite that still exists, unmodified
+> and still passing, in `legacy-sim/` — kept as the honest record of how
+> this project's BSW/RTE/ASW logic was originally verified, not as a
+> claim that it runs here.
 
-## Unit tests (spec section 14.1)
+## Hardware bring-up checklist (v3.0, replaces automated tests in this tree)
+
+None of the following is automated; each is a manual observation against
+real, flashed S32K144 hardware, recorded in a dated note (e.g. here or in
+`docs/IMPLEMENTATION_STATUS.md`) rather than a `ctest` pass/fail line.
+
+1. **Build and flash** both `sensor_ecu` and `cluster_ecu` (`cmake -S . -B
+   build -DCMAKE_TOOLCHAIN_FILE=cmake/s32k144_toolchain.cmake`), producing
+   `.hex`/`.bin` per image; flash each to its own board.
+2. **Wire the bus**: FlexCAN0 CAN-H/CAN-L between both boards with
+   termination; a wheel-speed/bench signal into `SensorEcu`'s ADC0 pin; an
+   ignition signal into its DIO pin; `ClusterEcu`'s LPUART1 (PTC6/PTC7) to
+   a PC over USB-serial, terminal open at ~9600 baud.
+3. **Normal exchange** (mirrors `legacy-sim`'s IT-01): steady ADC input,
+   ignition on — `ClusterEcu`'s terminal shows a repeating
+   `STATE=NORMAL;SPEED=...;FLAGS=...;T=...` line, updating roughly every
+   100 ms, tracking the ADC input.
+4. **Overspeed hysteresis** (mirrors `legacy-sim`'s `test_cluster_swc`):
+   raising the ADC input above the 100.00 km/h-equivalent count flips
+   `STATE` to `OVERSPEED`; lowering below the 97.00 km/h-equivalent count
+   flips it back — not before either threshold.
+5. **Timeout and recovery** (mirrors `legacy-sim`'s IT-02): disconnecting
+   the CAN bus drives `ClusterEcu` to `COMM_FAULT` within 100 ms;
+   reconnecting recovers only after three consecutive valid frames.
+6. **Integrity rejection** (mirrors `legacy-sim`'s IT-03): needs a CAN bus
+   analyzer able to inject a bad-CRC frame at `0x180` — if unavailable,
+   mark this item explicitly deferred rather than claiming it passed.
+7. **Sensor-line loss** (mirrors `legacy-sim`'s IT-06): disconnecting the
+   ADC input must not crash/hang `SensorEcu`; `ClusterEcu` should show
+   `SPEED=0` (input reported invalid), not a frozen last-good value.
+
+## Historical: Ubuntu-simulation test plan (legacy-sim only)
+
+Everything below this line describes `legacy-sim/`'s test suite — still
+present, still passing there, not part of this tree's build. Source of
+truth for that scope is `legacy-sim/AUTOSAR_CLASSIC_PROJECT_SPEC_v1.1.md`,
+section 14.
+
+### Unit tests (spec section 14.1)
 
 | Test target | Status |
 |---|---|
@@ -28,7 +74,29 @@ plan; it does not restate the full spec.
 | `test_stub_mcal` | **Done** (not in the original section 14.1 list; added for the Phase 8 `REQ-ARCH-012` proof) — the REAL `Adc.c`/`Dio.c`/`CanIf.c`/`VirtualHw_Parse.c`, completely unmodified, linked against the STUB `Can_Stub.c`/`VirtualHw_Stub.c`: injected-datagram round trip, malformed/duplicate-SEQ rejection matching the real driver, `Adc`/`Dio` reads working unmodified, `VirtualHw_Send` recording for inspection, and a `Can_Stub` loopback frame reaching the real `CanIf.c` end to end |
 | `test_smoke_phase0` | **Done** — harness smoke test only, see `docs/IMPLEMENTATION_STATUS.md` |
 
-## Integration tests (spec section 14.2)
+### Phase 9 unit tests (v2.0, spec section 16)
+
+Added for the `BswM`/`ComM`/`CanSM` split and the S32K144 hardware port.
+**Happy-path only** — see `docs/REQUIREMENTS_TRACEABILITY.md`'s Phase 9
+section for the specific `REQ-*` failure modes these do not yet cover
+(driver DeInit completeness, failed-partial-init cleanup, the `Os`/`BswM`
+layering rule, and the S32K144-variant build not pulling in POSIX test
+targets — none of those has a test at all yet, happy-path or otherwise).
+
+| Test target | Status |
+|---|---|
+| `test_bswm` | **Partial** — null-config rejection, initial/post-init/post-deinit state values; does **not** call `BswM_ActionList_Shutdown` and assert driver DeInit (`REQ-BSWM-001`), and does not drive a failure after partial init to check `BswM_DeInit`'s cleanup behavior (`REQ-BSWM-002`) |
+| `test_comm` | **Done** for `ComM`'s own scope — null-config rejection, initial channel mode, multi-user reference counting into/out of `COMM_FULL_COMMUNICATION`, `CanSM`/`Com` side-effect calls on transition; uses fake CanSM/Com |
+| `test_cansm` | **Done** for `CanSM`'s own scope — null-config rejection, state transitions `CANSM_UNINIT`→`CANSM_NOCOM`→`CANSM_FULLCOM`, `CanIf_SetControllerMode` called with the matching `CAN_CS_STARTED`/`CAN_CS_STOPPED`, `CanSM_GetCurrentComMode`; uses fake CanIf. Does not itself assert the "only `CanSM` calls `CanIf`'s controller-mode API" constraint (`REQ-CANSM-001`) — that needs a repository-wide check, not a unit test |
+| `test_os_lifecycle` | **Partial** — `StartOS`-before-`Os_Init` Det rejection, `Os_Init` success, `ShutdownOS` firing the shutdown hook with the right error code; does **not** check for the absence of a `BswM` reference from `bsw/os/` (`REQ-ARCH-015`) — that is a static grep, not covered here |
+
+No dedicated unit test exists yet for the S32K144 MCAL drivers
+(`Mcu_S32K144.c`, `Can_S32K144.c`, `Adc_S32K144.c`, `Dio_S32K144.c`,
+`Gpt_S32K144.c`, `Port_S32K144.c`, `SysTimer_S32K144.c`) — they require
+either real hardware or a register-model fixture, neither of which exists
+in this repository yet. Not started.
+
+### Integration tests (spec section 14.2)
 
 Automated under `tests/integration/`, driving the real `sensor_ecu`/
 `cluster_ecu` binaries as subprocesses through real `AF_UNIX` links, the
@@ -53,7 +121,7 @@ the four COM-layer DEM events were ever actually being set).
 | IT-06 | Sensor line disconnected and restored | **Done** — `test_it06_sensor_disconnect.py` |
 | IT-07 | Display link absent | **Done** — `test_it07_display_absent.py` |
 
-## Static checks (spec section 14.3)
+### Static checks (spec section 14.3)
 
 | Check | Status |
 |---|---|
@@ -63,11 +131,13 @@ the four COM-layer DEM events were ever actually being set).
 | SW-C forbidden-header check | **Manually verified through Phase 5** — grep confirms no file under `asw/` includes a BSW/MCAL header or calls `IoHwAb_`/`Adc_`/`Dio_`/`Display_`; not yet wired as an automated CI step |
 | `REQ-ARCH-009` MCAL isolation grep | **Manually verified through Phase 8** — `clock_gettime`/`sys/socket.h`/`sys/un.h`/`linux/can.h`/`linux/can/raw.h`/`AF_UNIX`/`AF_CAN`/`PF_CAN` all appear only in `bsw/mcal/` or the exempt `tests/`; the one documented exception is the default socket-path literal in each `ecu/<Ecu>/main.c` (section 15.4 requires the argument default to exist somewhere); not yet wired as an automated CI step |
 | `REQ-ARCH-014` MCAL/OS timer isolation grep | **Manually verified through Phase 4.5** — no file under `bsw/os/` contains the string `Gpt_`; not yet wired as an automated CI step |
+| `REQ-ARCH-015` `Os`/`BswM` isolation grep (v2.0) | **FAILS as of Phase 9** — `grep -rn "BswM" bsw/os/` finds `bsw/os/Os/Os.c`'s `StartOS` calling `BswM_GetState()`; see `docs/IMPLEMENTATION_STATUS.md` Phase 9 |
+| `REQ-ARCH-016` S32K144-variant build excludes host tests (v2.0) | **FAILS as of Phase 9** — `CMakeLists.txt` still adds every `test_*`/`sensor_ecu`/`cluster_ecu` unconditionally; a `-DAUTOSAR_MCAL_VARIANT=s32k144` configure has not been proven to build cleanly |
 | `REQ-ARCH-012` stub-MCAL build | **Done** — new CMake cache variable `AUTOSAR_MCAL_VARIANT` (`real`/`stub`) swaps only `Can.c`/`VirtualHw.c` for in-memory-buffer equivalents; `test_stub_mcal` (always built) proves the substitution seam; a full `-DAUTOSAR_MCAL_VARIANT=stub` build produces both working ECU executables with zero changes outside `bsw/mcal/`. See `docs/IMPLEMENTATION_STATUS.md`, Phase 8, for the verification log and one documented (non-bug) side effect of the stub's per-process loopback design. |
 | `malloc`/`calloc`/`realloc`/`free` search | **Manually verified through Phase 8** — none found; not yet wired as an automated CI step |
 | Python static check (`pyflakes`) | **Manually verified through Phase 8** — clean on all of `tools/hmi/*.py` and `tests/integration/*.py`; not required by the spec, done anyway since the tooling is real, runnable Python |
 
-## How to run what exists today
+### How to run what exists today
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug

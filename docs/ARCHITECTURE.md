@@ -1,21 +1,33 @@
 # Architecture
 
 This document summarizes the architecture defined in
-`AUTOSAR_CLASSIC_PROJECT_SPEC_v1.1.md`. It is a companion, not a
+`AUTOSAR_CLASSIC_PROJECT_SPEC_v3.0.md`. It is a companion, not a
 replacement — the specification is authoritative; this file is updated as
-each implementation phase (section 16 of the spec) lands so it stays true
-to the actual code rather than only the plan.
+each implementation phase lands so it stays true to the actual code
+rather than only the plan.
+
+**v3.0 note:** this tree is now S32K144-hardware-only (no Ubuntu
+simulation, no `vcan0`, no virtual hardware links — see the spec's
+section 0.2). The two layer-stack diagrams below, the "Who participates in
+one transmit/receive cycle" and "EcuM/BswM initialization order" sections,
+the "Data flow between the two ECUs" diagram, and the closing
+"Implementation status" section are all updated for that. The one section
+still written against the simulation is the Vietnamese beginner's guide at
+the end of this file, whose "shared road" analogy names `vcan0` — the
+concepts it teaches (layer separation, PDU routing, CRC/counter
+validation) are identical on real hardware, only the bus name and process
+model differ.
 
 ## Layers and vertical paths
 
-`sensor_ecu` and `cluster_ecu` are two separate Ubuntu processes, each
-with its own address space, PID, and memory — never one shared box — so
-the layer diagram is drawn as two subgraphs, one per ECU, matching that
-fact directly instead of a caveat underneath a merged picture:
+`sensor_ecu` and `cluster_ecu` are two independent S32K144 firmware
+images, each on its own physical board — never one shared box — so the
+layer diagram is drawn as two subgraphs, one per ECU, matching that fact
+directly instead of a caveat underneath a merged picture:
 
 ```mermaid
 flowchart TB
-    subgraph SENSOR["SensorEcu — separate Ubuntu process"]
+    subgraph SENSOR["SensorEcu — S32K144 board 1"]
         direction TB
         SASW["VehicleStateSwc"]
         SRTE["Runtime Environment"]
@@ -23,12 +35,15 @@ flowchart TB
             SCOM["Com"]
             SPDUR["PduR"]
             SSRV["EcuM / Os / Os_Counter / Logger / Det / Dem"]
+            SBSWM["BswM"]
+            SCOMM["ComM"]
         end
         subgraph SEAL["ECU Abstraction layer"]
             SCANIF["CanIf"]
+            SCANSM["CanSM"]
             SIOHWAB["IoHwAb"]
         end
-        subgraph SMCAL["MCAL (Ubuntu implementation)"]
+        subgraph SMCAL["MCAL (S32K144 register-level)"]
             SCANDRV["Can"]
             SADC["Adc"]
             SDIO["Dio"]
@@ -40,9 +55,13 @@ flowchart TB
         SIOHWAB --> SADC
         SIOHWAB --> SDIO
         SSRV -.-> SRTE
+        SBSWM -.-> SCOMM -.-> SCANSM -.-> SCANIF
+        SBSWM -.-> SADC
+        SBSWM -.-> SDIO
+        SBSWM -.-> SCANDRV
     end
 
-    subgraph CLUSTER["ClusterEcu — separate Ubuntu process"]
+    subgraph CLUSTER["ClusterEcu — S32K144 board 2"]
         direction TB
         CASW["ClusterControlSwc"]
         CRTE["Runtime Environment"]
@@ -50,43 +69,44 @@ flowchart TB
             CCOM["Com"]
             CPDUR["PduR"]
             CSRV["EcuM / Os / Os_Counter / Logger / Det / Dem"]
+            CBSWM["BswM"]
+            CCOMM["ComM"]
         end
         subgraph CEAL["ECU Abstraction layer"]
             CCANIF["CanIf"]
+            CCANSM["CanSM"]
             CIOHWAB["IoHwAb"]
         end
-        subgraph CMCAL["MCAL (Ubuntu implementation)"]
+        subgraph CMCAL["MCAL (S32K144 register-level)"]
             CCANDRV["Can"]
-            CDISP["Display"]
+            CDISP["Display (LPUART1)"]
             CBASE["Mcu / Port / Gpt / SysTimer"]
         end
         CASW --> CRTE
         CRTE --> CCOM --> CPDUR --> CCANIF --> CCANDRV
         CRTE --> CIOHWAB --> CDISP
         CSRV -.-> CRTE
+        CBSWM -.-> CCOMM -.-> CCANSM -.-> CCANIF
+        CBSWM -.-> CDISP
+        CBSWM -.-> CCANDRV
     end
 
-    CANBUS[["vcan0 — CAN bus\nECU-to-ECU application data ONLY"]]
-    SENSORLINK[["Sensor virtual hw link\nraw ADC counts + DIO level"]]
-    DISPLAYLINK[["Display virtual hw link\nrendered cluster frame"]]
-    HOSTCLOCK(("Ubuntu host clock\nqueried independently by each process\nno application data"))
+    CANBUS[["Real CAN bus (CAN-H/CAN-L)\nECU-to-ECU application data ONLY"]]
+    SENSORWIRE[["Wheel-speed + ignition wiring\nreal ADC counts + DIO level"]]
+    UARTLINK[["LPUART1 -> USB-serial -> terminal\nrendered cluster frame, text"]]
 
     SCANDRV <--> CANBUS
     CANBUS <--> CCANDRV
-    SADC --> SENSORLINK
-    SDIO --> SENSORLINK
-    CDISP --> DISPLAYLINK
-    SBASE -.-> HOSTCLOCK
-    CBASE -.-> HOSTCLOCK
+    SADC --> SENSORWIRE
+    SDIO --> SENSORWIRE
+    CDISP --> UARTLINK
 
     classDef canChan fill:#3b1f1f,stroke:#e06c75,color:#fff
     classDef sensorChan fill:#1f2a3b,stroke:#61afef,color:#fff
     classDef displayChan fill:#1f3b26,stroke:#98c379,color:#fff
-    classDef hostChan fill:#2b2b2b,stroke:#888,color:#ccc
     class CANBUS canChan
-    class SENSORLINK sensorChan
-    class DISPLAYLINK displayChan
-    class HOSTCLOCK hostChan
+    class SENSORWIRE sensorChan
+    class UARTLINK displayChan
 ```
 
 Both ECUs happen to link the identical `bsw_mcal`/`bsw_ecuab` library
@@ -98,26 +118,37 @@ reachable, `ClusterEcu` never has `Adc`/`Dio` reachable. That is a real
 build fact (each binary's `CMakeLists.txt` target links the whole
 library, so the unused half sits as dead code in the other role's
 binary), not a simplification. The only channel shared between the two
-processes is `vcan0`; `Sensor virtual hw link`, `Display virtual hw
-link`, and the host clock are each reached by exactly one side.
+boards is the real CAN bus; the sensor wiring and the UART link are each
+reached by exactly one side.
 
 Three separate destination nodes are drawn on purpose, not one merged
-"host" box: `Can` reaches only `vcan0`, `Adc`/`Dio` reach only the sensor
-line, `Display` reaches only the display line, and `Mcu`/`Port`/`Gpt`/
-`SysTimer` touch the host clock/process but carry no application data. A
-diagram that merged these into one box would invite the (wrong) reading
-that sensor/display traffic and CAN traffic share a channel, which the
-channel table below forbids.
+box: `Can` reaches only the CAN bus, `Adc`/`Dio` reach only the sensor
+wiring, `Display` reaches only LPUART1, and `Mcu`/`Port`/`Gpt`/`SysTimer`
+touch MCU registers but carry no application data. A diagram that merged
+these into one box would invite the (wrong) reading that sensor/display
+traffic and CAN traffic share a channel, which the channel table below
+forbids.
 
 Two vertical paths, both mandatory:
 
-- **Communication path**: `SW-C -> RTE -> Com -> PduR -> CanIf -> Can -> vcan0`
-- **I/O path**: `SW-C -> RTE -> IoHwAb -> Adc / Dio / Display -> virtual hardware link` (sensor line for `Adc`/`Dio`, display line for `Display` — never the same link)
+- **Communication path**: `SW-C -> RTE -> Com -> PduR -> CanIf -> Can -> real CAN bus`. `CanSM` is not on this path — it only calls *down* into `CanIf_SetControllerMode` (which calls `Can_SetControllerMode`) to change `Can`'s controller mode, on `ComM`'s behalf, during startup/shutdown; `CanIf` never calls `CanSM`, and `CanIf`'s own PDU-level Tx/Rx calls into `Can` are unchanged; see spec section 9.4.
+- **I/O path**: `SW-C -> RTE -> IoHwAb -> Adc / Dio / Display -> real hardware` (ADC/DIO pins for `SensorEcu`, LPUART1 for `ClusterEcu`)
 
-The MCAL (`bsw/mcal/`) is the sole substitution boundary: every host-specific
-artifact (sockets, file descriptors, `clock_gettime`, the CAN interface
-name) lives at or below it. Porting to a real microcontroller means
-rewriting `bsw/mcal/` and nothing else — see `REQ-ARCH-012`.
+`BswM`/`ComM` are also service-layer, shown with dashed arrows above:
+`BswM` triggers the driver init/deinit action lists that `EcuM` used to
+sequence directly (spec section 9.4), and arbitrates communication-mode
+requests, which `ComM` forwards to `CanSM`, which calls down into
+`CanIf_SetControllerMode` — `CanSM` never calls `Can` directly.
+
+The MCAL (`bsw/mcal/`) is the sole substitution boundary: every
+hardware-specific artifact (peripheral registers, the CAN controller)
+lives at or below it. Porting to a different microcontroller means
+rewriting `bsw/mcal/` and nothing else — see `REQ-ARCH-012`. As of v3.0,
+this claim has been exercised for real: the register-level
+`Mcu`/`Port`/`Gpt`/`SysTimer`/`Adc`/`Dio`/`Can`/`Display` drivers under
+`bsw/mcal/*_S32K144.c` and `platform/s32k144/` are the only files that
+differ from the original Ubuntu-simulation implementation, now frozen in
+`legacy-sim/`.
 
 Full layer ownership / allowed-dependency table: spec section 3.1.
 
@@ -129,7 +160,7 @@ table. That is not the same thing as which way the bytes actually move —
 `IOHWAB --> ADC` means "IoHwAb is allowed to call into Adc", not "data
 flows from IoHwAb to Adc". For the sensor input path the two directions
 are opposite: `Adc`/`Dio` are *called* from above but *read* their data
-from below (the virtual hw link), then hand it back up the same call
+from below (the real sensor pins), then hand it back up the same call
 chain via return values. Only the display output path happens to have
 call direction and data direction pointing the same way.
 
@@ -140,35 +171,35 @@ rather than call-oriented:
 flowchart LR
     subgraph SENSOR_ECU["SensorEcu — input path"]
         direction LR
-        SLINK[["Sensor virtual hw link\nraw ADC counts + DIO level"]]
-        SADC["Adc"]
-        SDIO["Dio"]
+        SLINK[["Wheel-speed + ignition wiring\nreal ADC counts + DIO level"]]
+        SADC["Adc (ADC0)"]
+        SDIO["Dio (GPIO)"]
         SIOHWAB["IoHwAb"]
         SRTE["RTE"]
         SASW["VehicleStateSwc"]
         SCOM["Com"]
         SPDUR["PduR"]
         SCANIF["CanIf"]
-        SCAN["Can"]
+        SCAN["Can (FlexCAN0)"]
         SLINK --> SADC --> SIOHWAB
         SLINK --> SDIO --> SIOHWAB
         SIOHWAB --> SRTE --> SASW --> SCOM
         SCOM --> SPDUR --> SCANIF --> SCAN
     end
 
-    CANBUS[["vcan0 — CAN bus"]]
+    CANBUS[["Real CAN bus (CAN-H/CAN-L)"]]
     SCAN --> CANBUS
 
     subgraph CLUSTER_ECU["ClusterEcu — output path"]
         direction LR
-        CCAN["Can"]
+        CCAN["Can (FlexCAN0)"]
         CCANIF["CanIf"]
         CPDUR["PduR"]
         CCOM["Com"]
         CASW["ClusterControlSwc"]
         CIOHWAB["IoHwAb"]
-        CDISP["Display"]
-        DLINK[["Display virtual hw link\nrendered cluster frame"]]
+        CDISP["Display (LPUART1)"]
+        DLINK[["LPUART1 -> USB-serial -> terminal\nrendered cluster frame, text"]]
         CCAN --> CCANIF --> CPDUR --> CCOM --> CASW
         CASW --> CIOHWAB --> CDISP --> DLINK
     end
@@ -198,10 +229,12 @@ roles: startup, timing, data, and diagnostics.
 flowchart TB
     subgraph STARTUP["1 - Startup rail: runs ONCE at power-on"]
         direction LR
-        ECUM["EcuM\ndrives the 19-step init order (section 9.2),\nthen enters ECUM_STATE_RUN"]
+        ECUM["EcuM\nPhase 1 (pre-OS, section 9.2): Logger, Mcu, Port,\nSysTimer, Os_Counter, Gpt, Det, Dem, Os_Init, StartOS"]
         MCU["Mcu\nMcu_Init / Mcu_InitClock\ncore + clock up before anything else"]
         PORT["Port\nPort_Init\npin/peripheral setup before any driver use"]
+        BSWM["BswM\nPhase 2 (post-OS, OS StartupHook, section 9.4):\naction lists init Adc/Dio/Display/Can, IoHwAb,\nCanIf/CanSM/PduR/Com/ComM, Rte_Start,\nthen ComM_RequestComMode(FULL_COMMUNICATION)"]
         ECUM ==> MCU ==> PORT
+        ECUM ==>|"StartOS, then OS StartupHook\nEcuM_StartupTwo -> BswM_Init"| BSWM
     end
 
     subgraph TIMING["2 - Timing rail: runs FOREVER, releases everything below"]
@@ -231,11 +264,11 @@ flowchart TB
         COM["Com\nsignals to 8-byte I-PDU,\nalive counter + CRC, timeout supervision"]
         PDUR["PduR\nstatic PDU routing, payload untouched"]
         CANIF["CanIf\nPDU id to CAN id, DLC check"]
-        CAN["Can\nSocketCAN frame in/out"]
-        BUS[["vcan0 - CAN bus"]]
+        CAN["Can\nS32K144 FlexCAN0 frame in/out"]
+        BUS[["Real CAN bus (CAN-H/CAN-L)"]]
         IOHWAB["IoHwAb\nscaling, plausibility, validity"]
         IO["Adc / Dio / Display\nraw counts, level, rendered frame"]
-        LINK[["virtual hw link"]]
+        HW[["real hardware\nADC/DIO pins (SensorEcu) or LPUART1 (ClusterEcu)"]]
         SWC <--> RTE
         RTE <--> COM
         COM <--> PDUR
@@ -244,7 +277,14 @@ flowchart TB
         CAN <--> BUS
         RTE <--> IOHWAB
         IOHWAB <--> IO
-        IO <--> LINK
+        IO <--> HW
+    end
+
+    subgraph MODEMGMT["3b - Mode-management rail: controls Can, carries no payload"]
+        direction LR
+        COMM["ComM\narbitrates communication-mode requests\n(section 9.4)"]
+        CANSM["CanSM\ncalls CanIf_SetControllerMode on ComM's behalf;\nnever touches CanIf's PDU Tx/Rx path"]
+        COMM --> CANSM
     end
 
     subgraph DIAG["4 - Diagnostic rail: never on the data path"]
@@ -253,7 +293,10 @@ flowchart TB
         DEM["Dem\nproduction event state:\nRx timeout, CRC/counter integrity,\nsensor/display link lost"]
     end
 
-    ECUM ==>|"_Init in order"| PATH
+    BSWM ==>|"ActionList_InitDrivers/InitEcuAb/InitCom/InitRte"| PATH
+    BSWM ==>|"ActionList_InitCom"| MODEMGMT
+    BSWM ==>|"ActionList_StartCommunication:\nComM_RequestComMode(FULL_COMMUNICATION)"| COMM
+    CANSM -. "CanIf_SetControllerMode\n(CAN_CS_STARTED/STOPPED)" .-> CANIF
     ECUM ==>|"SysTimer_Init, Os_Counter_Init, Gpt_Init"| SYSTIMER
     ECUM ==>|"Os_Init, then start schedule"| OS
 
@@ -276,7 +319,7 @@ flowchart TB
     classDef busNode fill:#3b1f1f,stroke:#e06c75,color:#fff
     classDef linkNode fill:#1f2a3b,stroke:#61afef,color:#fff
     class BUS busNode
-    class LINK linkNode
+    class HW linkNode
 ```
 
 Line styles: thick `==>` is one-shot initialization, solid `<-->` is
@@ -291,7 +334,10 @@ carries no payload (a periodic release, a time query, an error report).
 | `Os_Counter` | Converts `SysTimer` ticks to milliseconds for `Os`. Never calls `Gpt`; that separation is what a static check (grep for `Gpt_` under `bsw/os/`) proves mechanically. | No |
 | `Gpt` | The monotonic ms source every OTHER periodic decision reads: `Com` ("is the 20 ms period up? has the Rx deadline passed?"), `IoHwAb` ("is this sample stale?"), `Display` (minimum write period), `Dem`/`Logger` (timestamps). Never read by `Os` itself. | No |
 | `Os` | Actually calls every `_MainFunction`, timed by `Os_Counter`. Its fixed priority order at a shared release instant (Io 5 ms before App 10 ms before Com 20 ms) is what lets one sensor sample reach the bus within the same cycle instead of a period later. | No |
-| `EcuM` | Runs the 19-step init order once so every module below is ready before the first task runs (`SysTimer`/`Os_Counter` before `Gpt`, both before diagnostics, before drivers, before the comm stack, before the RTE); reverse order on shutdown. A single wrong init step means the cycle never starts. | No |
+| `EcuM` | Phase 1 (pre-OS, section 9.2): runs `Logger`/`Mcu`/`Port`/`SysTimer`/`Os_Counter`/`Gpt`/`Det`/`Dem`/`Os_Init` in order, then `StartOS` — hands control to the OS permanently. Reverse order on shutdown. A single wrong step means the cycle never starts. | No |
+| `BswM` | Phase 2 (post-OS, run once from the OS `StartupHook`, section 9.4): its action lists init the drivers, `IoHwAb`, the whole comm stack (`CanIf`/`CanSM`/`PduR`/`Com`/`ComM`), then `Rte_Start`, then request `COMM_FULL_COMMUNICATION` — this is what `EcuM` itself did directly before v2.0. `BswM_MainFunction` (called every cycle from `EcuM_MainFunction`, in turn called from `Os`) drives `ComM_MainFunction`/`CanSM_MainFunction`. | No |
+| `ComM` | Arbitrates communication-mode requests from its users (only `COMM_USER_BSWM` today) into one mode per channel, forwarded to `CanSM`. Never touches a payload byte. | No |
+| `CanSM` | Calls `CanIf_SetControllerMode` (`CAN_CS_STARTED`/`CAN_CS_STOPPED`) on `ComM`'s behalf, which in turn calls `Can_SetControllerMode` — `CanSM` never calls `Can` directly. Does not sit on the PDU path — `CanIf`'s Tx/Rx calls into `Can` are unchanged; see spec section 9.4. | No |
 | `Rte` | The only way a SW-C reaches anything: maps SW-C ports onto `Com_SendSignal`/`Com_ReceiveSignal` and `IoHwAb` calls. Carries payload but adds no logic of its own. | Yes |
 | `Det` | Synchronous development-error sink. Never part of a healthy cycle: if `Det` fires, a caller violated a contract. | No |
 | `Adc` `Dio` `IoHwAb` `Com` `PduR` `CanIf` `Can` `Display` | The data path itself, detailed in the two diagrams above. | Yes |
@@ -302,10 +348,16 @@ it moves only because rail 2 released the task, and only because rail 1
 had already made every module ready. Rails 1, 2 and 4 are what make the
 data path *deterministic and observable* rather than merely functional.
 
-## EcuM initialization order — rationale
+## EcuM/BswM initialization order — rationale
 
-`EcuM_Init` follows a fixed order (spec section 9.2, v1.2 — revised by the
-SysTimer/Os_Counter split, see the change log in section 0.3):
+Since the `BswM`/`ComM`/`CanSM` split (v2.0, spec section 9.4), init is two
+phases in two modules, not one 19-step list owned by `EcuM` alone. `EcuM`
+owns only what must exist before an OS can run; everything that itself
+needs the OS running (drivers, comm stack, RTE) moved to `BswM`, invoked
+from the OS `StartupHook` — i.e. it runs once, in OS context, immediately
+after `StartOS` starts scheduling, not inside `EcuM_Init` itself.
+
+**Phase 1 — `EcuM_Init` (pre-OS, bare-metal main context, section 9.2):**
 
 1. Logger
 2. `Mcu_Init`, `Mcu_InitClock`
@@ -315,17 +367,18 @@ SysTimer/Os_Counter split, see the change log in section 0.3):
 6. `Gpt_Init` + start the general-purpose time base
 7. `Det_Init`
 8. `Dem_Init`
-9. Parse command-line (post-build-like) configuration
-10. Input/output MCAL drivers (`Adc_Init`/`Dio_Init` or `Display_Init`)
-11. `Can_Init`
-12. `IoHwAb_Init`
-13. `CanIf_Init`
-14. `PduR_Init`
-15. `Com_Init`
-16. `Rte_Start`
-17. CAN controller to `CAN_CS_STARTED`
-18. Start COM I-PDU group (with init enabled)
-19. Start OS schedule, enter `ECUM_STATE_RUN`
+9. `Os_Init` (registers the `StartupHook` below)
+10. `StartOS` — does not return; hands control to the OS permanently
+
+**Phase 2 — OS `StartupHook` → `EcuM_StartupTwo` + `BswM_Init` (post-OS, section 9.4):**
+
+11. `EcuM_StartupTwo()`: state becomes `ECUM_STATE_RUN`
+12. `BswM_Init()`, four action lists in order:
+    - `InitDrivers`: `Adc_Init`/`Dio_Init`/`Display_Init` (whichever this ECU configures), `Can_Init` + controller-ready check
+    - `InitEcuAb`: `IoHwAb_Init`
+    - `InitCom`: `CanIf_Init`, `CanSM_Init`, `PduR_Init`, `Com_Init`, `ComM_Init`
+    - `InitRte`: `Rte_Start`
+13. `StartCommunication` action list: `ComM_RequestComMode(COMM_USER_BSWM, COMM_FULL_COMMUNICATION)` — `ComM` forwards this to `CanSM`, which is what actually brings the CAN controller to `CAN_CS_STARTED` and starts the COM I-PDU group; there is no longer a direct "start controller"/"start I-PDU group" step owned by `EcuM`
 
 This is the standard AUTOSAR ordering rationale applied to this project:
 **microcontroller and clock first** (nothing else can run without a time
@@ -335,18 +388,30 @@ before `Os_Counter`, both before the general-purpose `Gpt`, because the
 scheduler must be able to keep time before any module `Gpt` serves even
 exists — `REQ-ARCH-014`), **then diagnostics** (`Det`/`Dem` before any
 other module, so every later initialization failure is recordable rather
-than silently lost), **then drivers bottom-up** (MCAL, then `Can`), **then
-the ECU Abstraction layer** (`IoHwAb`) which depends on those drivers being
-ready, **then the communication stack bottom-up** (`CanIf` → `PduR` →
-`Com`, each depending on the layer initialized just before it), and
-**finally the RTE**, which is the first layer allowed to reach application
-code. Shutdown (section 9.3) is the same order reversed (`Gpt_DeInit` →
-`Os_Counter_DeInit` → `SysTimer_DeInit` last), so every module is torn
-down only after everything that depends on it has already stopped.
+than silently lost), **then, once the OS is running, drivers bottom-up**
+(MCAL, then `Can`), **then the ECU Abstraction layer** (`IoHwAb`) which
+depends on those drivers being ready, **then the communication stack
+bottom-up** (`CanIf` → `CanSM` → `PduR` → `Com` → `ComM`, each depending on
+the layer initialized just before it), and **finally the RTE**, which is
+the first layer allowed to reach application code. Shutdown is the mirror
+order: `BswM_DeInit`'s `Shutdown` action list first (tears down comm stack,
+RTE, drivers — reverse of Phase 2), then `EcuM_Shutdown` tears down Phase 1
+(`Gpt_DeInit` → `Os_Counter_DeInit` → `SysTimer_DeInit` last), so every
+module is torn down only after everything that depends on it has already
+stopped. (One known gap, still open — see the six Phase 9 findings in
+`docs/IMPLEMENTATION_STATUS.md`: `BswM`'s shutdown action list does not
+actually call `Adc_DeInit`/`Dio_DeInit`/`Display_DeInit`, so those drivers
+leak on shutdown; and `EcuM_StartupTwo` sets `ECUM_STATE_RUN` before
+`BswM_Init` has run at all, so a failed `BswM_Init` is reported after the
+state already claims `RUN`.)
 
-Implemented in `bsw/services/EcuM/EcuM.c` (Phase 6) exactly as listed
-above; verified live by running both ECUs and reading the printed
-section 9.3 step-8 scheduler/DET summary at shutdown.
+Implemented in `bsw/services/EcuM/EcuM.c` and `bsw/services/BswM/BswM.c`
+exactly as listed above; the `StartupHook` wiring lives in each ECU's
+`*_Cfg.c` (e.g. `SensorEcu_StartupHook`/`ClusterEcu_StartupHook`). Verified
+live on the Ubuntu simulation by running both ECUs and reading the printed
+scheduler/DET summary at shutdown (`legacy-sim/`); not yet re-verified on
+real S32K144 hardware — see the bring-up checklist in
+`AUTOSAR_CLASSIC_PROJECT_SPEC_v3.0.md` section 14.
 
 ## Data flow between the two ECUs
 
@@ -360,14 +425,14 @@ used **only** to tell the two PDUs apart at a glance; it does not mean
 
 ```mermaid
 flowchart TB
-    subgraph SE["SensorEcu process"]
+    subgraph SE["SensorEcu — S32K144 board 1"]
         direction TB
         SE_SWC["VehicleStateSwc"]
         SE_RTE["RTE"]
         SE_COM["Com"]
         SE_PDUR["PduR"]
         SE_CANIF["CanIf"]
-        SE_CAN["Can"]
+        SE_CAN["Can (FlexCAN0)"]
 
         SE_SWC ==>|"Rte_Write_PpVehicleState_*"| SE_RTE
         SE_RTE ==>|"Com_SendSignal"| SE_COM
@@ -381,16 +446,16 @@ flowchart TB
         SE_RTE -.->|"Rte_Read_RpClusterStatus_*"| SE_SWC
     end
 
-    BUS(("vcan0"))
+    BUS(("Real CAN bus\nCAN-H / CAN-L\n+ 120R termination"))
 
-    subgraph CE["ClusterEcu process"]
+    subgraph CE["ClusterEcu — S32K144 board 2"]
         direction TB
         CE_SWC["ClusterControlSwc"]
         CE_RTE["RTE"]
         CE_COM["Com"]
         CE_PDUR["PduR"]
         CE_CANIF["CanIf"]
-        CE_CAN["Can"]
+        CE_CAN["Can (FlexCAN0)"]
 
         CE_CAN ==>|"CanIf_RxIndication"| CE_CANIF
         CE_CANIF ==> CE_PDUR
@@ -415,8 +480,9 @@ Reading this diagram:
 - **Thick arrows** (`==>`): the `0x180 VehicleStatus` path, `SensorEcu` → `ClusterEcu`, produced every 20 ms, with a 100 ms reception deadline monitored on the `ClusterEcu` side.
 - **Dotted arrows** (`-.->`): the `0x181 ClusterStatus` path, `ClusterEcu` → `SensorEcu`, produced every 100 ms, with a 500 ms reception deadline monitored on the `SensorEcu` side.
 - Every box is used by **both** flows — `Com`, `PduR`, `CanIf`, and `Can` each run one Tx pipeline for the local ECU's own PDU and one Rx pipeline for the remote ECU's PDU, per the static routes in spec section 7.5. There are not two separate copies of these modules.
-- `vcan0` is the only thing the two processes share. Nothing here bypasses it — the receiving `Com` only accepts a frame after `CanIf`/`PduR` hand it a fully-formed I-PDU, and only after CRC + alive-counter validation does the RTE buffer update (`REQ-COM-003`, `REQ-RTE-005`); a single invalid frame leaves the previous application values untouched.
-- This diagram is the **Communication path** from the layer diagram above, drawn twice (once per direction) and joined at `vcan0`. It does not include the **I/O path** (sensor/display virtual links), which is internal to each ECU and never reaches the other ECU — see the layer diagram's channel-separation note.
+- The **physical CAN bus** is the only thing the two boards share: two twisted wires (CAN-H/CAN-L) between the two S32K144 CAN transceivers, terminated at both ends. Nothing here bypasses it — the receiving `Com` only accepts a frame after `CanIf`/`PduR` hand it a fully-formed I-PDU, and only after CRC + alive-counter validation does the RTE buffer update (`REQ-COM-003`, `REQ-RTE-005`); a single invalid frame leaves the previous application values untouched.
+- `CanSM` is deliberately **not** on this diagram: it only calls `CanIf_SetControllerMode` (`CAN_CS_STARTED`/`CAN_CS_STOPPED`) during startup/shutdown on `ComM`'s behalf — it never calls `Can` directly, and never touches a PDU. Once the controller is started, `CanIf` talks to `Can` directly for every Tx/Rx — see spec section 9.4 and the mode-management rail in the diagram two sections above.
+- This diagram is the **Communication path** from the layer diagram above, drawn twice (once per direction) and joined at the CAN bus. It does not include the **I/O path** (real ADC/DIO pins on `SensorEcu`, LPUART1 on `ClusterEcu`), which is local to each board and never reaches the other ECU — see the layer diagram's channel-separation note.
 
 ## Beginner's guide to the diagram above (Vietnamese)
 
@@ -528,16 +594,34 @@ vừa nhận thư về qua đúng các phòng ban đó — không ai trong tòa 
 ## Implementation status
 
 See `docs/IMPLEMENTATION_STATUS.md` for the full phase-by-phase record.
-**All 8 phases of the spec's section 16 plan are complete** (plus the
-between-4-and-5 SysTimer/Os_Counter split): both ECU executables run their
-full lifecycle over real `vcan0`, every section 14.1 unit test and all
-seven section 14.2 integration tests (IT-01 through IT-07) pass, the
-project builds and passes its full test suite under AddressSanitizer and
-UndefinedBehaviorSanitizer with zero diagnostics, and the `REQ-ARCH-012`
-stub-MCAL build is verified. The layering, routing, and lifecycle
-behavior described above is therefore the *observed* behavior of the
-code, not only its target. `docs/REQUIREMENTS_TRACEABILITY.md` covers
-every `REQ-*` requirement in the specification.
+Everything through v2.0 (the `BswM`/`ComM`/`CanSM` module split plus a
+first S32K144 register-level MCAL port, built alongside the Ubuntu
+simulation) was implemented and verified — but that verification was
+against the Ubuntu simulation's own build and 26-test suite, which is
+frozen and still true, standalone, in `legacy-sim/`.
+
+**v3.0 (this document's current state) is a hardware-only pivot, not yet
+build- or hardware-verified.** The Ubuntu MCAL, `VirtualHw`, the Tkinter
+HMI, and the whole unit/integration test suite were removed from this
+tree; `Display_S32K144.c` (LPUART1 text output) and
+`ecu/ClusterEcu/main.c` (bare-metal entry point) were added; `CMakeLists.txt`
+was simplified to one fixed S32K144 source list. None of this has been
+compiled with a real `arm-none-eabi-gcc` toolchain or flashed to a board
+in this environment. The layering, routing, and lifecycle behavior
+described above is the *intended* behavior carried forward from the
+Ubuntu simulation's own verified behavior, not yet an *observed* fact of
+this tree — see the spec's section 14 for the hardware bring-up checklist
+that would make it one.
+
+The six correctness issues found by code review before this pivot are
+still open (`BswM`'s shutdown action list leaks drivers, `BswM_DeInit`
+skips cleanup after a failed init, `EcuM` can claim `ECUM_STATE_RUN`
+before `BswM_Init` succeeds, `Os.c` reaches into `BswM` directly,
+`ComM_ModeType` is defined twice, plus a couple of MCAL-level findings) —
+see `docs/IMPLEMENTATION_STATUS.md` and
+`docs/REQUIREMENTS_TRACEABILITY.md` for the current list. They matter
+more now than before this pivot, since no test suite remains in this tree
+to catch a regression.
 
 An HTML rendering of this document, with the diagrams pre-wired to render
 in a browser, lives next to it at `docs/ARCHITECTURE.html`.

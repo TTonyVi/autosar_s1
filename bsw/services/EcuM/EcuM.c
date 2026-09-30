@@ -24,30 +24,22 @@ static volatile boolean g_shutdownRequested;
 #define LOG_WARN(...) Logger_Log(LOGGER_LEVEL_WARN, "EcuM", __VA_ARGS__)
 #define LOG_ERROR(...) Logger_Log(LOGGER_LEVEL_ERROR, "EcuM", __VA_ARGS__)
 
-/* Vai trò: NHẠC TRƯỞNG của toàn bộ quá trình khởi động — gọi Init của
- * TẤT CẢ module khác theo đúng 19 bước cố định (section 9.2): Logger →
- * Mcu/clock → Port → SysTimer/Os_Counter → Gpt → Det/Dem → driver I/O →
- * Can (lỗi mở Can là fatal, khác VirtualHw) → IoHwAb → CanIf/PduR/Com →
- * Rte_Start → bật controller → bật I-PDU group → cuối cùng mới Os_Init
- * (không được kích hoạt task nào trước khi mọi thứ nó gọi tới đã sẵn
- * sàng). Bất kỳ bước nào lỗi nghiêm trọng thì dừng ngay, chuyển sang
- * SHUTDOWN, trả E_NOT_OK — không cố gắng "chạy tiếp cho được". */
+/* Vai trò: NHẠC TRƯỞNG Phase 1 (Pre-OS) — khởi tạo các module nền tảng
+ * trước khi có OS: Logger → Mcu/clock → Port → SysTimer/Os_Counter → Gpt
+ * → Det/Dem → Os_Init → StartOS (gọi StartupHook để BswM chạy Phase 2). */
 Std_ReturnType EcuM_Init(const EcuM_ConfigType *config) {
     g_shutdownRequested = FALSE;
     g_config = NULL;
     g_state = ECUM_STATE_STARTUP;
 
     if ((config == NULL) || (config->osConfig == NULL)) {
-        /* Nothing is initialized yet, so this cannot be logged or recorded
-         * anywhere useful; the return value is the whole report. */
         g_state = ECUM_STATE_SHUTDOWN;
         return E_NOT_OK;
     }
 
-    /* 1. Logger first, so every later failure is reportable rather than
-     *    silently lost (section 9.2). */
+    /* 1. Logger first, so every later failure is reportable rather than silently lost */
     Logger_Init(config->ecuName, config->logLevel);
-    LOG_INFO("startup begins");
+    LOG_INFO("Phase 1 Pre-OS startup begins");
 
     /* 2. Microcontroller and clock: nothing else can run without them. */
     Mcu_Init(config->mcuConfig);
@@ -60,9 +52,7 @@ Std_ReturnType EcuM_Init(const EcuM_ConfigType *config) {
     /* 3. Pin configuration before any peripheral use. */
     Port_Init(config->portConfig);
 
-    /* 4-5. The OS time base, before the general-purpose one: the scheduler
-     *      must be able to keep time before any module Gpt serves exists
-     *      (section 8.1, REQ-ARCH-014). */
+    /* 4-5. The OS time base, before the general-purpose one. */
     SysTimer_Init(config->sysTimerConfig);
     Os_Counter_Init();
 
@@ -70,73 +60,13 @@ Std_ReturnType EcuM_Init(const EcuM_ConfigType *config) {
     Gpt_Init(config->gptConfig);
     Logger_NotifyTimeBaseReady();
 
-    /* 7-8. Diagnostics, so every later initialization failure is recordable. */
+    /* 7-8. Diagnostics, so later failures are recordable. */
     Det_Init();
     Dem_Init();
     LOG_INFO("time base and diagnostics up");
-
-    /* 9. Post-build-like configuration was parsed by main() and is already
-     *    baked into the tables below (section 11.1); logging it here is
-     *    what makes the effective configuration visible at startup. */
     LOG_INFO("log level=%u", (unsigned)config->logLevel);
 
-    /* 10. Input and output MCAL drivers. VirtualHw comes first inside this
-     *     step because Adc/Dio/Display are its consumers; the spec groups
-     *     them as one step rather than naming the transport separately.
-     *     REQ-ECUM-005: a missing link is NOT a startup failure. */
-    if (config->virtualHwConfig != NULL) {
-        VirtualHw_Init(config->virtualHwConfig);
-    }
-    if (config->adcConfig != NULL) {
-        Adc_Init(config->adcConfig);
-    }
-    if (config->dioConfig != NULL) {
-        Dio_Init(config->dioConfig);
-    }
-    if (config->displayConfig != NULL) {
-        Display_Init(config->displayConfig);
-    } else {
-        LOG_INFO("display driver disabled by configuration");
-    }
-
-    /* 11. CAN driver. REQ-ECUM-001: unlike a hardware link, a CAN interface
-     *     that cannot be opened IS a fatal startup failure. */
-    Can_Init(config->canConfig);
-    if (!Can_IsControllerReady(config->canControllerId)) {
-        LOG_ERROR("CAN controller %u not ready; the interface could not be opened",
-                  (unsigned)config->canControllerId);
-        g_state = ECUM_STATE_SHUTDOWN;
-        return E_NOT_OK;
-    }
-
-    /* 12. ECU Abstraction, which depends on the drivers above. */
-    IoHwAb_Init(config->ioHwAbConfig);
-
-    /* 13-15. Communication stack bottom-up, each layer after the one it
-     *        depends on. */
-    CanIf_Init(config->canIfConfig);
-    PduR_Init(config->pduRConfig);
-    Com_Init(config->comConfig);
-
-    /* 16. The RTE is the first layer allowed to reach application code. */
-    if (Rte_Start() != E_OK) {
-        LOG_ERROR("Rte_Start failed");
-        g_state = ECUM_STATE_SHUTDOWN;
-        return E_NOT_OK;
-    }
-
-    /* 17. Controller to started, through CanIf (never Can directly). */
-    if (CanIf_SetControllerMode(config->canControllerId, CAN_CS_STARTED) != E_OK) {
-        LOG_ERROR("CAN controller %u refused to start", (unsigned)config->canControllerId);
-        g_state = ECUM_STATE_SHUTDOWN;
-        return E_NOT_OK;
-    }
-
-    /* 18. COM I-PDU group with initialization enabled. */
-    Com_IpduGroupStart(COM_DEFAULT_IPDU_GROUP_ID, TRUE);
-
-    /* 19. OS schedule last: nothing may be activated before every module
-     *     it will call is ready. */
+    /* 9. OS schedule setup. */
     if (Os_Init(config->osConfig) != E_OK) {
         LOG_ERROR("Os_Init rejected the task table");
         g_state = ECUM_STATE_SHUTDOWN;
@@ -144,28 +74,34 @@ Std_ReturnType EcuM_Init(const EcuM_ConfigType *config) {
     }
 
     g_config = config;
-    g_state = ECUM_STATE_RUN;
-    LOG_INFO("startup complete, entering RUN");
-    return E_OK;
+
+    /* 10. StartOS: hands control permanently to OS (does not return on normal execution) */
+    LOG_INFO("Phase 1 Pre-OS complete, invoking StartOS");
+    StartOS(OSDEFAULTAPPMODE);
+
+    /* Reached only if StartOS was forced to return early */
+    return (g_state == ECUM_STATE_RUN) ? E_OK : E_NOT_OK;
 }
 
-/* Vai trò: hàm chạy theo chu kỳ của EcuM — chỉ đơn giản gọi
- * Os_MainFunction() (tick scheduler) khi đang ở RUN; nếu chưa/không còn
- * ở RUN thì từ chối, không cho task nào chạy. */
+/* Vai trò: Phase 2 transition — được gọi từ OS context / StartupHook khi OS đã chạy. */
+void EcuM_StartupTwo(void) {
+    g_state = ECUM_STATE_RUN;
+    LOG_INFO("EcuM_StartupTwo: transitioning to RUN");
+}
+
+/* Vai trò: hàm chạy theo chu kỳ của EcuM — gọi BswM_MainFunction và Os_MainFunction. */
 void EcuM_MainFunction(void) {
     if (g_state != ECUM_STATE_RUN) {
         (void)Det_ReportError(DET_MODULE_ID_ECUM, 0U, ECUM_API_ID_MAIN_FUNCTION, DET_ERR_UNINIT);
         return;
     }
+    BswM_MainFunction();
     Os_MainFunction();
 }
 
 /* Vai trò: chỉ đặt 1 cờ boolean (REQ-ECUM-003) — an toàn để gọi từ signal
- * handler (Ctrl+C), không I/O, không cấp phát bộ nhớ. Vòng lặp main() sẽ
- * tự kiểm tra cờ này ở nhịp tiếp theo rồi gọi EcuM_Shutdown thật sự. */
+ * handler (Ctrl+C), không I/O, không cấp phát bộ nhớ. */
 void EcuM_RequestShutdown(void) {
-    /* REQ-ECUM-003: only sets a flag. No I/O, no allocation, nothing that
-     * would be unsafe to do from a signal handler. */
     g_shutdownRequested = TRUE;
 }
 
@@ -174,62 +110,38 @@ boolean EcuM_ShutdownRequested(void) {
     return g_shutdownRequested;
 }
 
-/* Vai trò: getter — trạng thái hiện tại của ECU (OFF/STARTUP/RUN/
- * POST_RUN/SHUTDOWN). */
+/* Vai trò: kiểm tra giới hạn thời gian chạy (--duration) nếu có cấu hình. */
+boolean EcuM_IsDurationExpired(void) {
+    if ((g_config == NULL) || (g_config->durationSeconds == 0U)) {
+        return FALSE;
+    }
+    Gpt_ValueType durationMs = g_config->durationSeconds * 1000U;
+    if (Gpt_GetTimeElapsed(GPT_CHANNEL_TIME_BASE) >= durationMs) {
+        LOG_INFO("--duration reached, stopping");
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/* Vai trò: getter — trạng thái hiện tại của ECU. */
 EcuM_StateType EcuM_GetState(void) {
     return g_state;
 }
 
-/* Vai trò: NHẠC TRƯỞNG của quá trình tắt máy — thực hiện ĐÚNG THỨ TỰ
- * NGƯỢC LẠI với EcuM_Init (section 9.3): dừng nhận task mới → dừng COM
- * group/controller → Rte_Stop → dừng comm stack từ trên xuống → dừng
- * abstraction/driver I/O → in báo cáo tổng kết scheduler + DET trong khi
- * các module đó vẫn còn sống (bước 8) → cuối cùng mới tắt Os/Gpt/
- * Os_Counter/SysTimer/Logger. Gọi lại nhiều lần hoặc khi đã OFF đều an
- * toàn, không crash (REQ-ECUM-004). */
+/* Vai trò: tắt máy — phối hợp với BswM_DeInit tắt các module Post-OS,
+ * sau đó tắt các module Phase 1 Pre-OS theo thứ tự ngược lại. */
 void EcuM_Shutdown(void) {
     if ((g_state == ECUM_STATE_SHUTDOWN) || (g_state == ECUM_STATE_OFF)) {
-        /* REQ-ECUM-004: repeated deinit SHALL not crash. */
         return;
     }
 
-    /* Section 9.3, the reverse of the initialization order. */
     g_state = ECUM_STATE_POST_RUN;
     LOG_INFO("shutdown begins");
 
-    /* 1. Stop accepting new application activations. Leaving RUN is what
-     *    does that: EcuM_MainFunction refuses to schedule in any other
-     *    state. Os_DeInit is deliberately deferred to step 9, because the
-     *    scheduler summary at step 8 has to be readable. */
+    /* 1. De-initialize Post-OS modules via BswM */
+    BswM_DeInit();
 
-    /* 2-3. Stop the COM group, then the controller. */
-    Com_IpduGroupStop(COM_DEFAULT_IPDU_GROUP_ID);
-    if (g_config != NULL) {
-        (void)CanIf_SetControllerMode(g_config->canControllerId, CAN_CS_STOPPED);
-    }
-
-    /* 4-6. RTE, then the communication stack top-down. */
-    (void)Rte_Stop();
-    Com_DeInit();
-    PduR_DeInit();
-    CanIf_DeInit();
-    Can_DeInit();
-
-    /* 7. Abstraction, then the I/O drivers, then the links themselves. */
-    IoHwAb_DeInit();
-    if ((g_config != NULL) && (g_config->adcConfig != NULL)) {
-        Adc_DeInit();
-    }
-    if ((g_config != NULL) && (g_config->dioConfig != NULL)) {
-        Dio_DeInit();
-    }
-    if ((g_config != NULL) && (g_config->displayConfig != NULL)) {
-        Display_DeInit();
-    }
-    VirtualHw_DeInit();
-
-    /* 8. Scheduler and diagnostic summary, while those modules are still
-     *    up (section 9.3 step 8). */
+    /* 2. Scheduler and diagnostic summary while those modules are still up */
     if (g_config != NULL) {
         for (uint8 i = 0U; i < g_config->osConfig->numTasks; i++) {
             Os_TaskStatsType stats;
@@ -255,12 +167,10 @@ void EcuM_Shutdown(void) {
     Dem_DeInit();
     Det_DeInit();
 
-    /* 10. Logged before the time bases stop, so the last line still
-     *     carries a real timestamp. */
     g_state = ECUM_STATE_SHUTDOWN;
     LOG_INFO("shutdown complete");
 
-    /* 9. Scheduler, then the time bases, in the reverse of steps 4 to 6. */
+    /* 3. Tear down Phase 1 time bases and OS */
     Os_DeInit();
     Gpt_DeInit();
     Os_Counter_DeInit();

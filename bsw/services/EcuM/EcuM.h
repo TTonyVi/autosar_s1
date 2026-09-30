@@ -13,6 +13,7 @@
 #define ECUM_H
 
 #include "Adc.h"
+#include "BswM.h"
 #include "Can.h"
 #include "CanIf.h"
 #include "Com.h"
@@ -28,7 +29,6 @@
 #include "Port.h"
 #include "Std_Types.h"
 #include "SysTimer.h"
-#include "VirtualHw.h"
 
 /** Section 9.1. */
 typedef uint8 EcuM_StateType;
@@ -62,7 +62,6 @@ typedef struct {
     const Port_ConfigType *portConfig;
     const SysTimer_ConfigType *sysTimerConfig;
     const Gpt_ConfigType *gptConfig;
-    const VirtualHw_ConfigType *virtualHwConfig;
 
     /** SensorEcu only; NULL on ClusterEcu. */
     const Adc_ConfigType *adcConfig;
@@ -77,18 +76,24 @@ typedef struct {
     const PduR_ConfigType *pduRConfig;
     const Com_ConfigType *comConfig;
     const Os_ConfigType *osConfig;
+    const BswM_ConfigType *bswMConfig;
 
     /** Controller taken to CAN_CS_STARTED at init step 17. */
     uint8 canControllerId;
+
+    /** Optional duration limit in seconds (0 = run indefinitely). */
+    uint32 durationSeconds;
 } EcuM_ConfigType;
 
 /**
- * Runs the section 9.2 order. Returns E_NOT_OK and leaves the ECU in
- * ECUM_STATE_SHUTDOWN on a fatal startup failure — which, per
- * `REQ-ECUM-001`, means a CAN interface that could not be opened, and per
- * `REQ-ECUM-005` does NOT mean a missing virtual hardware link.
+ * Runs Phase 1 (Pre-OS) initialization up to StartOS.
  */
 Std_ReturnType EcuM_Init(const EcuM_ConfigType *config);
+
+/**
+ * Runs Phase 2 transition to RUN (called from OS context / StartupHook).
+ */
+void EcuM_StartupTwo(void);
 
 /** Runs the section 9.3 order; safe to call more than once (`REQ-ECUM-004`). */
 void EcuM_Shutdown(void);
@@ -103,5 +108,8 @@ void EcuM_RequestShutdown(void);
 
 EcuM_StateType EcuM_GetState(void);
 boolean EcuM_ShutdownRequested(void);
+
+/** Returns TRUE if the configured durationSeconds has elapsed. */
+boolean EcuM_IsDurationExpired(void);
 
 #endif /* ECUM_H */

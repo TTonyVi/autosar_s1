@@ -14,9 +14,20 @@ static Os_MilliType OsNowMs(void) {
     return Os_Counter_TicksToMs(Os_Counter_GetValue());
 }
 
-#define OS_API_ID_INIT ((Det_ApiIdType)1U)
-#define OS_API_ID_MAIN_FUNCTION ((Det_ApiIdType)2U)
-#define OS_API_ID_GET_TASK_STATS ((Det_ApiIdType)3U)
+#if !defined(__arm__) && !defined(__thumb__)
+#define _POSIX_C_SOURCE 200809L
+#include <stdlib.h>
+#include <time.h>
+#endif
+
+#include "BswM.h"
+#include "EcuM.h"
+
+#define OS_API_ID_INIT             ((Det_ApiIdType)1U)
+#define OS_API_ID_MAIN_FUNCTION    ((Det_ApiIdType)2U)
+#define OS_API_ID_GET_TASK_STATS   ((Det_ApiIdType)3U)
+#define OS_API_ID_START_OS         ((Det_ApiIdType)4U)
+#define OS_API_ID_SHUTDOWN_OS      ((Det_ApiIdType)5U)
 
 typedef struct {
     uint32 nextReleaseMs;
@@ -61,6 +72,68 @@ Std_ReturnType Os_Init(const Os_ConfigType *config) {
 
     g_initialized = TRUE;
     return E_OK;
+}
+
+/* Vai trò: chuẩn AUTOSAR/OSEK StartOS — khởi động OS, chạy StartupHook,
+ * và bước vào vòng lặp điều phối của OS (hàm không quay lại). */
+void StartOS(AppModeType Mode) {
+    (void)Mode;
+    if (!g_initialized || (g_config == NULL)) {
+        (void)Det_ReportError(DET_MODULE_ID_OS, 0U, OS_API_ID_START_OS, DET_ERR_UNINIT);
+        return;
+    }
+
+    /* 1. Thực thi StartupHook (gọi EcuM_StartupTwo & BswM_Init để khởi động Phase 2) */
+    if (g_config->startupHook != NULL) {
+        g_config->startupHook();
+    }
+
+    /* 2. Kiểm tra Phase 2 hoàn tất thành công qua BswM */
+    if (BswM_GetState() != BSWM_STATE_RUN) {
+        (void)Det_ReportError(DET_MODULE_ID_OS, 0U, OS_API_ID_START_OS, DET_ERR_INVALID_CONFIG);
+        ShutdownOS(E_OS_STATE);
+        return;
+    }
+
+    /* 3. Vòng lặp điều phối chính của OS — chiếm quyền CPU và chạy liên tục */
+    while (!EcuM_ShutdownRequested()) {
+        EcuM_MainFunction();
+
+        if (EcuM_IsDurationExpired()) {
+            EcuM_RequestShutdown();
+            break;
+        }
+
+#if defined(__arm__) || defined(__thumb__)
+        /* Trên vi điều khiển ARM (S32K144): ngủ WFI tiết kiệm điện cho đến ngắt SysTick 1ms kế tiếp */
+        __asm volatile("wfi");
+#else
+        /* Trên máy chủ mô phỏng (Ubuntu/Linux): ngủ 250µs định kỳ để điều hòa xung nhịp */
+        const struct timespec tick = {.tv_sec = 0, .tv_nsec = 250000L};
+        (void)nanosleep(&tick, NULL);
+#endif
+    }
+
+    /* 4. Tắt máy tuần tự khi có yêu cầu dừng */
+    ShutdownOS(E_OK);
+}
+
+/* Vai trò: chuẩn AUTOSAR/OSEK ShutdownOS — chạy ShutdownHook, tắt EcuM và thoát/halt. */
+void ShutdownOS(StatusType Error) {
+    if ((g_config != NULL) && (g_config->shutdownHook != NULL)) {
+        g_config->shutdownHook(Error);
+    }
+
+    EcuM_RequestShutdown();
+    EcuM_Shutdown();
+
+#if defined(__arm__) || defined(__thumb__)
+    while (1) {
+        __asm volatile("wfi");
+    }
+#elif !defined(UNIT_TEST)
+    exit((int)Error);
+#endif
 }
 
 /* Vai trò: tắt scheduler (hạ cờ init, bỏ tham chiếu config). */
